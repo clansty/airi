@@ -31,17 +31,15 @@ await manager.setGeometry('main', { x, y, width, height })
 - `layer` is `background`, `bottom`, `top` or `overlay`. Overlay is above fullscreen windows.
 - `keyboard` is `none` or `on-demand`. `on-demand` gives the window the keyboard when the user clicks it, and never before.
 
-## Moving between outputs
+## Pushing a window past an edge
 
-A layer surface keeps the output it was created with. The protocol has no request that changes it. The proxy therefore destroys the role object and builds a new one on the other output for the same `wl_surface`, so the window and the page stay as they are.
+The proxy reports `pushed` with the edges the user pushed through when a gesture ends with the pointer outside the window.
 
-Two things make that work. The object number of the new role has to wait for the `delete_id` the compositor sends after the destroy. And the client must not attach a buffer before it acks the first `configure` of the new role, so the proxy holds its `attach` requests until that ack arrives. A commit still goes through, because an empty commit is legal and the client's frame callback needs its answer.
-
-The proxy reports `pushed` with the edges the user pushed through when a gesture ends with the pointer outside the window. The app decides whether to move the window there.
+A layer surface keeps the output it was created with, and the protocol has no request that changes it. Moving a window to another screen therefore needs a new window there. The proxy once destroyed the role object and built a new one on the other output for the same `wl_surface`. That does not work: the compositor sends no `configure` for a role it rebuilt on a surface it already configured, so the client waits forever and stops drawing. A surface of its own is what a client needs for that.
 
 ## Limits
 
-- The proxy clamps a drag to the output. A gesture that pushes past the edge stops there, and the app can move the window with `relocate`.
+- The proxy clamps a drag to the output. A gesture that pushes past the edge stops there, and the app only learns where the user pushed.
 - The proxy reads the pointer position from its own events, so a gesture follows the pointer while it stays over the window.
 - A popup gets no pointer grab. Clicking outside of an open menu does not close it.
 - Chromium sends `xdg_toplevel.move` only for a `-webkit-app-region: drag` area. A window without one cannot be dragged.

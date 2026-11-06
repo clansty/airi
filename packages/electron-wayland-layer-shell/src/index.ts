@@ -200,26 +200,6 @@ export class LayerShellManager {
     }
   }
 
-  /**
-   * 把窗口挪到另一块屏幕上。
-   *
-   * 层表面的输出在创建时就固定，所以代理要销毁 role 对象再在目标输出上重建；
-   * 客户端那边什么都不会变，页面也不用重新加载。
-   */
-  async relocate(
-    windowId: string,
-    output: string | undefined,
-    outputSize: { width: number, height: number } | undefined,
-    geometry: LayerShellGeometry,
-  ): Promise<boolean> {
-    try {
-      return await this.control.request<boolean>({ type: 'relocate', windowId, output, outputSize, geometry })
-    }
-    catch {
-      return false
-    }
-  }
-
   async detach(windowId: string): Promise<void> {
     try {
       await this.control.request({ type: 'detach', windowId })

@@ -75,23 +75,6 @@ function displayAcrossEdge(from: Display, edges: number): Display | undefined {
   return undefined
 }
 
-/** 落到新屏幕上之后的位置：贴着两块屏共用的那条边，另一个方向不动。 */
-function wrapOntoEdge(edges: number, target: Display, bounds: Rectangle): Rectangle {
-  const next = { ...bounds }
-
-  if (edges & EDGE.right)
-    next.x = target.bounds.x
-  else if (edges & EDGE.left)
-    next.x = target.bounds.x + target.bounds.width - bounds.width
-
-  if (edges & EDGE.bottom)
-    next.y = target.bounds.y
-  else if (edges & EDGE.top)
-    next.y = target.bounds.y + target.bounds.height - bounds.height
-
-  return next
-}
-
 /** 没有层表面时的退化实现：一切交给 Electron。 */
 function createPlainBinding(title: string): LayerShellWindowBinding {
   let window: BrowserWindow | undefined
@@ -123,7 +106,7 @@ export async function prepareLayerShellWindow(params: {
   if (!manager)
     return createPlainBinding(params.title)
 
-  let display = screen.getDisplayMatching(params.bounds)
+  const display = screen.getDisplayMatching(params.bounds)
   const options: LayerShellWindowOptions = {
     ...params.options,
     output: params.options.output ?? display.label,
@@ -150,38 +133,16 @@ export async function prepareLayerShellWindow(params: {
   /**
    * 用户把窗口顶到屏幕边上还继续推。
    *
-   * 层表面换不了输出，只能把 role 对象销毁到隔壁那块屏上重建；窗口和页面都不动，所以没有重开的闪烁。
-   * 几何先算好：落点贴着两块屏共用的那条边，另一个方向保持不动。
+   * 层表面的输出在创建时就固定，协议里没有换输出的请求，所以只能把这个窗口整个重建到那块屏上，
+   * 也就是重开窗口、重新加载页面。这一步只有应用能做，而且要做对（关旧的、按新输出重新 attach、
+   * 再建新的），现在还没做，先留日志。
    */
-  async function moveToAdjacentScreen(edges: number) {
-    if (!manager)
-      return
-
+  function reportPushed(edges: number) {
     const from = screen.getDisplayMatching(toBounds(display, current))
     const target = displayAcrossEdge(from, edges)
-    if (!target) {
-      log.log(`no screen beyond the edge on ${from.label}, staying`)
-      return
-    }
-
-    // 先把视角切到新屏幕：代理接下来报的几何是相对新屏幕的，位置要按它换算成全局坐标再存。
-    const bounds = wrapOntoEdge(edges, target, toBounds(display, current))
-    display = target
-    const moved = await manager.relocate(
-      params.windowId,
-      target.label,
-      { width: target.bounds.width, height: target.bounds.height },
-      toGeometry(target, bounds),
-    )
-    if (!moved) {
-      display = from
-      log.warn(`could not move ${params.windowId} to ${target.label}`)
-      return
-    }
-
-    current = toGeometry(target, bounds)
-    notify(bounds)
-    log.log(`moved ${params.windowId} to ${target.label}`)
+    log.log(target
+      ? `${params.windowId} was pushed against ${from.label}: moving it needs a new window on ${target.label}`
+      : `${params.windowId} was pushed against the edge of ${from.label}, and nothing is beyond it`)
   }
 
   const stopListening = manager.onEvent((event) => {
@@ -190,7 +151,7 @@ export async function prepareLayerShellWindow(params: {
       return
 
     if (event.type === 'pushed') {
-      void moveToAdjacentScreen(event.edges)
+      reportPushed(event.edges)
       return
     }
 
