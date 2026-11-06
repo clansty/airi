@@ -270,6 +270,76 @@ describe('connection filter', () => {
     expect([reader.int(), reader.int(), reader.int(), reader.int()]).toEqual([1000, 0, 0, 2160])
   })
 
+  it('finds the output from the display label Electron reports', () => {
+    // Electron 的屏幕名字长这样：「厂商 - 型号 - 连接器」，连接器就是 wl_output 的名字。
+    const labelled = new Map([['pet', { options: { ...options, output: 'Example Vendor - Example Model - DP-3' }, geometry }]])
+    const harness = createHarness(labelled)
+    bootstrap(harness)
+
+    createWindow(harness, decorateWindowTitle('pet', 'AIRI'))
+    harness.client(buildMessage(SURFACE, 6, []))
+
+    const layer = harness.toServer[1]
+    const reader = new ArgumentReader(layer.payload)
+    reader.object() // 层表面自己的号
+    reader.object() // wl_surface
+    // 输出的对象号：认不出名字时这里是 0，窗口就跑到别的屏幕上去了。
+    expect(reader.object()).toBe(OUTPUT)
+  })
+
+  it('resizes the surface when the client asks the compositor to resize it', () => {
+    const harness = createHarness(policyMap())
+    bootstrap(harness)
+    createWindow(harness, decorateWindowTitle('pet', 'AIRI'))
+    harness.client(buildMessage(SURFACE, 6, []))
+
+    harness.server(buildMessage(POINTER, 0, [1, SURFACE, 10 * 256, 10 * 256]))
+    // 右下角（bottom 2 | right 8）开始拉，指针往右下走 30x20。
+    harness.client(buildMessage(TOPLEVEL, 6, [SEAT, 2, 10]))
+    harness.toServer.length = 0
+    harness.server(buildMessage(POINTER, 2, [40 * 256, 30 * 256]))
+
+    const sizes = harness.toServer.find(message => message.opcode === LAYER.setSize)
+    const reader = new ArgumentReader(sizes!.payload)
+    expect([reader.int(), reader.int()]).toEqual([430, 620])
+  })
+
+  it('shows a popup of a managed window as a layer surface', () => {
+    const popupSurface = 20
+    const popupXdgSurface = 21
+    const positioner = 22
+    const popup = 23
+
+    const harness = createHarness(policyMap())
+    bootstrap(harness)
+    createWindow(harness, decorateWindowTitle('pet', 'AIRI'))
+    harness.client(buildMessage(SURFACE, 6, []))
+    harness.toServer.length = 0
+
+    // 弹窗挂在这个窗口上：父窗口是层表面，合成器不认，只能把弹窗也变成层表面。
+    harness.client(buildMessage(COMPOSITOR, 0, [popupSurface]))
+    harness.client(buildMessage(WM_BASE, 2, [popupXdgSurface, popupSurface]))
+    harness.client(buildMessage(WM_BASE, 1, [positioner]))
+    harness.client(buildMessage(positioner, 1, [163, 28]))
+    harness.client(buildMessage(positioner, 2, [21, 176, 10, 15]))
+    // 锚点和 gravity 都是右下角，也就是菜单和气泡最常见的摆法。
+    harness.client(buildMessage(positioner, 3, [10]))
+    harness.client(buildMessage(positioner, 4, [10]))
+    harness.client(buildMessage(popupXdgSurface, 2, [popup, XDG_SURFACE, positioner]))
+
+    // get_popup 不能转发给合成器，父窗口在那边不存在。
+    expect(harness.toServer.some(message => message.objectId === popupXdgSurface)).toBe(false)
+
+    const layer = harness.toServer.find(message => message.objectId === XDG_SURFACE && message.opcode === 0
+      && new ArgumentReader(message.payload).object() === popup)
+    expect(layer).toBeDefined()
+
+    const margins = harness.toServer.find(message => message.objectId === popup && message.opcode === LAYER.setMargin)
+    const reader = new ArgumentReader(margins!.payload)
+    // 窗口在 (200, 100)，锚点相对窗口是 (21, 176)，两边都是右下角对齐，弹窗 163x28。
+    expect([reader.int(), reader.int(), reader.int(), reader.int()]).toEqual([263, 0, 0, 68])
+  })
+
   it('applies geometry from the app', () => {
     const harness = createHarness(policyMap())
     bootstrap(harness)

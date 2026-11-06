@@ -30,7 +30,17 @@ const WL_SEAT = { getPointer: 0, getKeyboard: 1, getTouch: 2 } as const
 const WL_OUTPUT = { geometry: 0, mode: 1, scale: 3, name: 4 } as const
 const XDG_WM_BASE = { createPositioner: 1, getXdgSurface: 2 } as const
 const XDG_SURFACE = { destroy: 0, getToplevel: 1, getPopup: 2, setWindowGeometry: 3, ackConfigure: 4 } as const
+const XDG_POSITIONER = {
+  destroy: 0,
+  setSize: 1,
+  setAnchorRect: 2,
+  setAnchor: 3,
+  setGravity: 4,
+  setOffset: 6,
+} as const
 const XDG_SURFACE_EVENT = { configure: 0 } as const
+const XDG_POPUP = { destroy: 0, grab: 1, reposition: 2 } as const
+const XDG_POPUP_EVENT = { configure: 0, popupDone: 1 } as const
 const XDG_TOPLEVEL = {
   destroy: 0,
   setParent: 1,
@@ -104,8 +114,16 @@ interface LayerWindow {
   gesture?: Gesture
 }
 
-/** 拖动中，位移一律从按下那一刻算起，避免把上一步累加进去。 */
+/**
+ * 一次指针拖动。层表面拖不动，只能代理自己算。
+ *
+ * `startPointer` 记的是屏幕坐标：窗口跟着指针动，所以 surface 内的坐标每一刻都在变，
+ * 拿它当基准会把位移算错。
+ */
 interface Gesture {
+  mode: 'move' | 'resize'
+  /** `xdg_toplevel.resize` 的边，位值和锚点一致。 */
+  edges: number
   startPointer: { x: number, y: number }
   startGeometry: LayerShellGeometry
 }
@@ -118,6 +136,36 @@ interface OutputState {
   transform: number
 }
 
+/**
+ * 弹出窗口（提示气泡、下拉菜单）在合成器那边要挂在一个存在的 xdg_surface 上，
+ * 而转换过的窗口没有这个对象，父窗口那个参数直接让连接报错。
+ *
+ * 所以弹出窗口也变成层表面：位置由定位器算出来，configure 再翻译回客户端那套。
+ */
+interface LayerPopup {
+  popupId: number
+  xdgSurfaceId: number
+  surfaceId: number
+  /** 相对父 surface 的位置，客户端的 configure 要这个。 */
+  position: { x: number, y: number }
+  /** 层表面的 margin 是相对屏幕的，子弹窗要靠它换算。 */
+  origin: { x: number, y: number }
+  size: { width: number, height: number }
+  namespace: string
+  outputId: number
+}
+
+/**
+ * 弹出窗口的定位参数。客户端填完定位器才 `get_popup`，所以这几个值要记下来。
+ */
+interface PositionerState {
+  anchorRect?: { x: number, y: number, width: number, height: number }
+  size?: { width: number, height: number }
+  anchor?: number
+  gravity?: number
+  offset?: { x: number, y: number }
+}
+
 export interface FilterDeps {
   sendToServer: (bytes: Buffer, fds: readonly number[]) => void
   sendToClient: (bytes: Buffer, fds: readonly number[]) => void
@@ -128,6 +176,57 @@ export interface FilterDeps {
 }
 
 const empty = Buffer.alloc(0)
+
+/**
+ * 按 `xdg_positioner` 的语义算出弹窗左上角相对父窗口的位置。
+ * 锚点选出父窗口上的一个点，gravity 选出弹窗自己的一个点，两个点重合。
+ */
+function placePopup(positioner: PositionerState | undefined): { x: number, y: number } {
+  const rect = positioner?.anchorRect ?? { x: 0, y: 0, width: 0, height: 0 }
+  const size = positioner?.size ?? { width: 0, height: 0 }
+  const anchor = positioner?.anchor ?? 0
+  const gravity = positioner?.gravity ?? 0
+  const offset = positioner?.offset ?? { x: 0, y: 0 }
+
+  const anchorX = anchor & ANCHOR.right ? rect.x + rect.width : anchor & ANCHOR.left ? rect.x : rect.x + rect.width / 2
+  const anchorY = anchor & ANCHOR.bottom ? rect.y + rect.height : anchor & ANCHOR.top ? rect.y : rect.y + rect.height / 2
+  const gravityX = gravity & ANCHOR.right ? size.width : gravity & ANCHOR.left ? 0 : size.width / 2
+  const gravityY = gravity & ANCHOR.bottom ? size.height : gravity & ANCHOR.top ? 0 : size.height / 2
+
+  // 结果要当 margin 用，只能是整数。
+  return { x: Math.round(anchorX - gravityX + offset.x), y: Math.round(anchorY - gravityY + offset.y) }
+}
+
+/** 手势拖出来的窗口不能无限小，不然缓冲区和层表面都没法看。 */
+const MIN_WINDOW_SIZE = 64
+
+/**
+ * `xdg_toplevel.resize` 只给拖的是哪条边，尺寸和位置都要从位移自己算。
+ * 边的位值和锚点一致，所以可以直接拿 `ANCHOR` 判断。
+ */
+function resizeGeometry(start: LayerShellGeometry, edges: number, dx: number, dy: number): LayerShellGeometry {
+  const next = { ...start }
+
+  if (edges & ANCHOR.left) {
+    const width = Math.max(MIN_WINDOW_SIZE, start.width - dx)
+    next.x = start.x + (start.width - width)
+    next.width = width
+  }
+  else if (edges & ANCHOR.right) {
+    next.width = Math.max(MIN_WINDOW_SIZE, start.width + dx)
+  }
+
+  if (edges & ANCHOR.top) {
+    const height = Math.max(MIN_WINDOW_SIZE, start.height - dy)
+    next.y = start.y + (start.height - height)
+    next.height = height
+  }
+  else if (edges & ANCHOR.bottom) {
+    next.height = Math.max(MIN_WINDOW_SIZE, start.height + dy)
+  }
+
+  return next
+}
 
 /** 这些请求会分配新的对象号。事务压着的时候遇到它们，必须先把事务放行，否则合成器的对象表会留空洞。 */
 function createsObject(iface: string, opcode: number): boolean {
@@ -154,8 +253,15 @@ export class ConnectionFilter {
   private readonly plugs = new Map<number, { freed: boolean }>()
   private readonly outputs = new Map<number, OutputState>()
   private readonly outputIdsByName = new Map<string, number>()
+  private readonly positioners = new Map<number, PositionerState>()
+  private readonly popups = new Map<number, LayerPopup>()
+  /** 弹窗的 xdg_surface 在客户端眼里是普通对象，要靠它认出来。 */
+  private readonly popupByXdgSurface = new Map<number, number>()
+  /** 弹窗所在的 wl_surface 号，`get_popup` 只给了 xdg_surface 号。 */
+  private readonly surfaceByXdgSurface = new Map<number, number>()
 
-  private pointer = { x: 0, y: 0, known: false }
+  /** 指针位置，坐标是相对 `surfaceId` 那个 surface 的。 */
+  private pointer = { x: 0, y: 0, surfaceId: 0, known: false }
   /** 客户端自己的 wl_registry 对象，代理绑全局要用它。 */
   private registryId: number | undefined
   private layerShellGlobalInfo: { name: number, version: number } | undefined
@@ -277,6 +383,8 @@ export class ConnectionFilter {
       case 'wl_surface': return this.onSurfaceRequest(message)
       case 'xdg_wm_base': return this.onXdgWmBaseRequest(message)
       case 'xdg_surface': return this.onXdgSurfaceRequest(message, object)
+      case 'xdg_positioner': return this.onPositionerRequest(message)
+      case 'xdg_popup': return this.onPopupCommand(message)
       case 'xdg_toplevel': return this.onXdgToplevelRequest(message, object)
       case 'zxdg_decoration_manager_v1': return this.onDecorationManagerRequest(message)
       case 'zxdg_toplevel_decoration_v1': return this.onDecorationRequest(message, object)
@@ -359,6 +467,13 @@ export class ConnectionFilter {
   }
 
   private onXdgWmBaseRequest(message: WaylandMessage): Buffer[] {
+    if (message.opcode === XDG_WM_BASE.createPositioner) {
+      const positionerId = new ArgumentReader(message.payload).object()
+      this.objects.set(positionerId, { iface: 'xdg_positioner' })
+      this.positioners.set(positionerId, {})
+      return [message.raw]
+    }
+
     if (message.opcode !== XDG_WM_BASE.getXdgSurface)
       return [message.raw]
 
@@ -367,6 +482,7 @@ export class ConnectionFilter {
     const surfaceId = reader.object()
 
     this.objects.set(xdgSurfaceId, { iface: 'xdg_surface' })
+    this.surfaceByXdgSurface.set(xdgSurfaceId, surfaceId)
 
     const surface = this.surfaces.get(surfaceId) ?? {}
     this.surfaces.set(surfaceId, surface)
@@ -379,6 +495,31 @@ export class ConnectionFilter {
   }
 
   private onXdgSurfaceRequest(message: WaylandMessage, object: ClientObject): Buffer[] {
+    // 弹窗自己也可能弹出东西（子菜单），父参数得先按弹窗解析。
+    if (message.opcode === XDG_SURFACE.getPopup)
+      return this.onPopupRequest(message)
+
+    const popupId = this.popupByXdgSurface.get(message.objectId)
+    if (popupId !== undefined) {
+      const popup = this.popups.get(popupId)
+      if (!popup)
+        return []
+
+      if (message.opcode === XDG_SURFACE.ackConfigure) {
+        const serial = new ArgumentReader(message.payload).uint()
+        return [buildMessage(popup.popupId, LAYER_SURFACE.ackConfigure, [serial])]
+      }
+
+      if (message.opcode === XDG_SURFACE.destroy) {
+        this.destroyLayerPopup(popup)
+        // 这个 xdg_surface 合成器那边是真的存在的，销毁请求要转发，不然合成器留一个野对象。
+        return [message.raw]
+      }
+
+      // set_window_geometry 这类只有 toplevel 才有意义。
+      return []
+    }
+
     if (object.windowId) {
       const window = this.windows.get(object.windowId)
       if (!window)
@@ -400,6 +541,7 @@ export class ConnectionFilter {
     }
 
     const pending = this.pendingRoles.find(role => role.xdgSurfaceId === message.objectId)
+
     if (!pending)
       return [message.raw]
 
@@ -430,13 +572,17 @@ export class ConnectionFilter {
         return []
 
       switch (message.opcode) {
+        // 合成器不会替层表面做交互式移动和缩放，两种手势都由代理自己跟着指针算。
         case XDG_TOPLEVEL.move:
-          this.beginGesture(window)
+          this.beginGesture(window, 'move', 0)
           return []
-        // 层表面的尺寸由应用设置，跟着合成器拖动改尺寸会让缓冲区和层表面尺寸对不上。
-        case XDG_TOPLEVEL.resize:
-          this.deps.log(`ignoring a compositor resize for ${window.windowId}: the app sets the size`)
+        case XDG_TOPLEVEL.resize: {
+          const reader = new ArgumentReader(message.payload)
+          reader.object() // seat
+          reader.uint() // serial
+          this.beginGesture(window, 'resize', reader.uint())
           return []
+        }
         case XDG_TOPLEVEL.destroy:
           this.destroyLayerSurface(window)
           return []
@@ -454,8 +600,10 @@ export class ConnectionFilter {
       const parsed = parseWindowTitle(new ArgumentReader(message.payload).string())
       const policy = parsed ? this.deps.policy(parsed.windowId) : undefined
 
-      if (!parsed || !policy)
+      if (!parsed || !policy) {
+        this.deps.log(`keeping "${parsed?.title ?? 'an untitled window'}" as an ordinary window`)
         return [...this.flushPendingRoles('the title names no managed window'), message.raw]
+      }
 
       return this.convert(pending, parsed.windowId)
     }
@@ -463,6 +611,112 @@ export class ConnectionFilter {
     // 角色还没定，构造阶段的属性先压着。
     pending.held.push(message.raw)
     return this.guardPendingSize(pending)
+  }
+
+  private onPositionerRequest(message: WaylandMessage): Buffer[] {
+    if (message.opcode === XDG_POSITIONER.destroy) {
+      this.positioners.delete(message.objectId)
+      this.objects.delete(message.objectId)
+      return [message.raw]
+    }
+
+    const state = this.positioners.get(message.objectId) ?? {}
+    const reader = new ArgumentReader(message.payload)
+
+    if (message.opcode === XDG_POSITIONER.setSize) {
+      state.size = { width: reader.int(), height: reader.int() }
+    }
+    else if (message.opcode === XDG_POSITIONER.setAnchorRect) {
+      state.anchorRect = { x: reader.int(), y: reader.int(), width: reader.int(), height: reader.int() }
+    }
+    else if (message.opcode === XDG_POSITIONER.setAnchor) {
+      state.anchor = reader.uint()
+    }
+    else if (message.opcode === XDG_POSITIONER.setGravity) {
+      state.gravity = reader.uint()
+    }
+    else if (message.opcode === XDG_POSITIONER.setOffset) {
+      state.offset = { x: reader.int(), y: reader.int() }
+    }
+
+    this.positioners.set(message.objectId, state)
+    return [message.raw]
+  }
+
+  /**
+   * 弹出窗口在合成器那边必须有父窗口，而转换过的窗口在合成器眼里不存在，
+   * 所以把弹窗也做成层表面：位置用定位器算出来，之后再把 configure 翻译回客户端那套。
+   */
+  private onPopupRequest(message: WaylandMessage): Buffer[] {
+    const reader = new ArgumentReader(message.payload)
+    const popupId = reader.object()
+    const parentId = reader.object()
+    const positionerId = reader.object()
+
+    const parentWindowId = this.objects.get(parentId)?.windowId
+    const parentWindow = parentWindowId ? this.windows.get(parentWindowId) : undefined
+    const parentPopupId = this.popupByXdgSurface.get(parentId)
+    const parentPopup = parentPopupId === undefined ? undefined : this.popups.get(parentPopupId)
+    // 普通 toplevel 的弹窗合成器自己肯定认得，原样转发。
+    const parentOrigin = parentWindow
+      ? { x: parentWindow.geometry.x, y: parentWindow.geometry.y }
+      : parentPopup?.origin
+    if (!parentOrigin)
+      return [message.raw]
+
+    const surfaceId = this.surfaceByXdgSurface.get(message.objectId)
+    const layerShellGlobal = this.layerShellGlobal
+    if (surfaceId === undefined || layerShellGlobal === undefined) {
+      this.deps.log(`cannot turn popup #${popupId} into a layer surface`)
+      return []
+    }
+
+    const positioner = this.positioners.get(positionerId)
+    const position = placePopup(positioner)
+    const size = positioner?.size ?? { width: 1, height: 1 }
+    const popup: LayerPopup = {
+      popupId,
+      xdgSurfaceId: message.objectId,
+      surfaceId,
+      position,
+      origin: { x: parentOrigin.x + position.x, y: parentOrigin.y + position.y },
+      size,
+      namespace: parentWindow?.options.namespace ?? parentPopup?.namespace ?? 'airi-popup',
+      outputId: parentWindow?.outputId ?? parentPopup?.outputId ?? 0,
+    }
+
+    this.objects.set(popupId, { iface: 'xdg_popup' })
+    this.popups.set(popupId, popup)
+    this.popupByXdgSurface.set(popup.xdgSurfaceId, popupId)
+
+    // 客户端的 xdg_popup 号正好是下一个该出现的新号，拿来当层表面用，合成器的对象表就不留洞。
+    return [
+      buildMessage(layerShellGlobal, LAYER_SHELL.getLayerSurface, [
+        popupId,
+        surfaceId,
+        popup.outputId,
+        LAYER.overlay,
+        popup.namespace,
+      ]),
+      buildMessage(popupId, LAYER_SURFACE.setAnchor, [ANCHOR.top | ANCHOR.left]),
+      buildMessage(popupId, LAYER_SURFACE.setExclusiveZone, [-1 >>> 0]),
+      buildMessage(popupId, LAYER_SURFACE.setMargin, [popup.origin.y, 0, 0, popup.origin.x]),
+      buildMessage(popupId, LAYER_SURFACE.setSize, [popup.size.width, popup.size.height]),
+      // 菜单要能拿键盘，但抢焦点会打断输入，所以按需给。
+      buildMessage(popupId, LAYER_SURFACE.setKeyboardInteractivity, [KEYBOARD['on-demand']]),
+    ]
+  }
+
+  private onPopupCommand(message: WaylandMessage): Buffer[] {
+    const popup = this.popups.get(message.objectId)
+    if (!popup)
+      return [message.raw]
+
+    if (message.opcode === XDG_POPUP.destroy)
+      this.destroyLayerPopup(popup)
+
+    // grab / reposition 在层表面里没有对应物：层表面拿不到指针抓取，合成器也不给重定位。
+    return []
   }
 
   private onDecorationManagerRequest(message: WaylandMessage): Buffer[] {
@@ -560,7 +814,13 @@ export class ConnectionFilter {
     if (layerSurfaceId === undefined)
       return this.flushPendingRoles('no toplevel id to reuse')
 
-    const outputId = options.output ? this.outputIdsByName.get(options.output) ?? 0 : 0
+    const boundOutput = options.output ? this.outputIdFor(options.output) : undefined
+    if (options.output && boundOutput === undefined) {
+      // 对不上输出名就只能让合成器挑，窗口会跑到别的屏幕上，所以这里必须留下现场。
+      const known = [...this.outputIdsByName.keys()].join(', ')
+      this.deps.log(`no output named "${options.output}": known outputs are ${known || 'none yet'}`)
+    }
+    const outputId = boundOutput ?? 0
 
     // 客户端的 toplevel 号直接拿来当层表面的号：合成器的对象表要稠密，只有这样才不留洞。
     this.objects.set(layerSurfaceId, { iface: 'xdg_toplevel', windowId })
@@ -585,6 +845,9 @@ export class ConnectionFilter {
 
     this.pendingRoles = this.pendingRoles.filter(role => role !== pending)
     this.deps.onEvent({ type: 'attached', windowId })
+    // 层表面出问题时，「给了谁、摆在哪个输出」是最先要看的两件事。
+    const outputName = [...this.outputIdsByName.entries()].find(([, id]) => id === outputId)?.[0]
+    this.deps.log(`attached ${windowId}: ${width}x${height} at ${x},${y} on ${outputName ?? 'the output the compositor picks'}`)
 
     // 顺序要紧：合成器的对象表只接受「下一个」号，所以代理注入的对象必须按号从小到大创建，
     // 否则中间那个洞会让服务端拒绝后面那个 new_id（表现为 sync 的 invalid arguments）。
@@ -702,6 +965,11 @@ export class ConnectionFilter {
     if (windowId)
       return this.onLayerSurfaceEvent(message, windowId)
 
+    // 弹窗的层表面号就是客户端那个 xdg_popup 号。
+    const popup = this.popups.get(message.objectId)
+    if (popup)
+      return this.onLayerPopupEvent(message, popup)
+
     return [message.raw]
   }
 
@@ -771,18 +1039,38 @@ export class ConnectionFilter {
     return [message.raw]
   }
 
+  /**
+   * 把应用给的屏幕名字换成 wl_output 的对象号。
+   *
+   * Electron 的 `display.label` 是「厂商 - 型号 - 连接器」，连接器就是 wl_output 的名字，
+   * 所以按词切开逐个比，名字对不上时窗口会摆到别的屏幕上。
+   */
+  private outputIdFor(label: string): number | undefined {
+    const exact = this.outputIdsByName.get(label)
+    if (exact !== undefined)
+      return exact
+
+    const words = label.split(/[^\w-]+/u)
+    for (const [name, id] of this.outputIdsByName) {
+      if (words.includes(name))
+        return id
+    }
+
+    return undefined
+  }
+
   private onPointerEvent(message: WaylandMessage): Buffer[] {
     const window = this.gestureWindow()
 
     if (message.opcode === WL_POINTER.enter) {
       const reader = new ArgumentReader(message.payload)
       reader.uint() // serial
-      reader.object() // surface
-      this.pointer = { x: Math.round(reader.fixed()), y: Math.round(reader.fixed()), known: true }
+      const surfaceId = reader.object()
+      this.pointer = { x: Math.round(reader.fixed()), y: Math.round(reader.fixed()), surfaceId, known: true }
     }
     else if (message.opcode === WL_POINTER.motion) {
       const reader = new ArgumentReader(message.payload)
-      this.pointer = { x: Math.round(reader.fixed()), y: Math.round(reader.fixed()), known: true }
+      this.pointer = { ...this.pointer, x: Math.round(reader.fixed()), y: Math.round(reader.fixed()), known: true }
 
       if (window?.gesture)
         this.dragTo(window)
@@ -803,6 +1091,35 @@ export class ConnectionFilter {
     }
 
     return [message.raw]
+  }
+
+  private onLayerPopupEvent(message: WaylandMessage, popup: LayerPopup): Buffer[] {
+    if (message.opcode === LAYER_SURFACE_EVENT.configure) {
+      const reader = new ArgumentReader(message.payload)
+      const serial = reader.uint()
+      const width = reader.uint()
+      const height = reader.uint()
+
+      if (width > 0 && height > 0)
+        popup.size = { width, height }
+
+      // 客户端等的是 xdg_surface.configure 加 xdg_popup.configure，两个都要给。
+      return [
+        buildMessage(popup.xdgSurfaceId, XDG_SURFACE_EVENT.configure, [serial]),
+        buildMessage(popup.popupId, XDG_POPUP_EVENT.configure, [
+          serial,
+          popup.position.x,
+          popup.position.y,
+          popup.size.width,
+          popup.size.height,
+        ]),
+      ]
+    }
+
+    if (message.opcode === LAYER_SURFACE_EVENT.closed)
+      return [buildMessage(popup.popupId, XDG_POPUP_EVENT.popupDone, [])]
+
+    return []
   }
 
   private onLayerSurfaceEvent(message: WaylandMessage, windowId: string): Buffer[] {
@@ -844,16 +1161,21 @@ export class ConnectionFilter {
     return undefined
   }
 
-  private beginGesture(window: LayerWindow): void {
-    if (!this.pointer.known) {
+  private beginGesture(window: LayerWindow, mode: 'move' | 'resize', edges: number): void {
+    const pointer = this.globalPointer(window)
+    if (!pointer) {
       this.deps.log(`cannot drag ${window.windowId}: the pointer position is unknown`)
       return
     }
 
     window.gesture = {
-      startPointer: { ...this.pointer },
+      mode,
+      edges,
+      startPointer: pointer,
       startGeometry: { ...window.geometry },
     }
+    // 手势日志是排查「拖了没反应」的第一手材料。
+    this.deps.log(`${mode === 'move' ? 'moving' : `resizing on edges ${edges}`} ${window.windowId} from ${pointer.x},${pointer.y}`)
   }
 
   private dragTo(window: LayerWindow): void {
@@ -861,17 +1183,23 @@ export class ConnectionFilter {
     if (!gesture)
       return
 
-    // 每个事件都从按下时算起：合成器在拖动期间给的坐标还是按下时那套几何下的，
-    // 累加上一步会把一次拖动放大成事件个数倍。
-    const next = this.clampToOutput(window, {
-      x: gesture.startGeometry.x + Math.round(this.pointer.x - gesture.startPointer.x),
-      y: gesture.startGeometry.y + Math.round(this.pointer.y - gesture.startPointer.y),
-      width: gesture.startGeometry.width,
-      height: gesture.startGeometry.height,
-    })
-
-    if (next.x === window.geometry.x && next.y === window.geometry.y)
+    const pointer = this.globalPointer(window)
+    if (!pointer)
       return
+
+    const dx = pointer.x - gesture.startPointer.x
+    const dy = pointer.y - gesture.startPointer.y
+    const next = this.clampToOutput(
+      window,
+      gesture.mode === 'move'
+        ? { ...gesture.startGeometry, x: gesture.startGeometry.x + dx, y: gesture.startGeometry.y + dy }
+        : resizeGeometry(gesture.startGeometry, gesture.edges, dx, dy),
+    )
+
+    if (next.x === window.geometry.x && next.y === window.geometry.y
+      && next.width === window.geometry.width && next.height === window.geometry.height) {
+      return
+    }
 
     window.geometry = next
     this.pushGeometry(window)
@@ -880,6 +1208,35 @@ export class ConnectionFilter {
   private endGesture(window: LayerWindow): void {
     window.gesture = undefined
     this.deps.onEvent({ type: 'geometry', windowId: window.windowId, geometry: window.geometry })
+  }
+
+  /**
+   * 指针的屏幕坐标。
+   *
+   * 指针事件带的是 surface 内的坐标，而 surface 自己也在动，所以要拿它当前的位置补齐。
+   * 每算一次都用最新几何，拖动就不会把上一步的位移重复计进去。
+   */
+  private globalPointer(fallback: LayerWindow): { x: number, y: number } | undefined {
+    if (!this.pointer.known)
+      return undefined
+
+    const origin = this.surfaceOrigin(this.pointer.surfaceId)
+      ?? { x: fallback.geometry.x, y: fallback.geometry.y }
+    return { x: origin.x + this.pointer.x, y: origin.y + this.pointer.y }
+  }
+
+  private surfaceOrigin(surfaceId: number): { x: number, y: number } | undefined {
+    for (const window of this.windows.values()) {
+      if (window.surfaceId === surfaceId)
+        return { x: window.geometry.x, y: window.geometry.y }
+    }
+
+    for (const popup of this.popups.values()) {
+      if (popup.surfaceId === surfaceId)
+        return popup.origin
+    }
+
+    return undefined
   }
 
   /** 位置限制在输出内。层表面换不了输出，拖到边上就停住。 */
@@ -942,6 +1299,13 @@ export class ConnectionFilter {
     this.layerSurfaces.delete(window.layerSurfaceId)
   }
 
+  private destroyLayerPopup(popup: LayerPopup): void {
+    this.deps.sendToServer(buildMessage(popup.popupId, LAYER_SURFACE.destroy, []), [])
+    this.popups.delete(popup.popupId)
+    this.popupByXdgSurface.delete(popup.xdgSurfaceId)
+    this.objects.delete(popup.popupId)
+  }
+
   private closeWindow(windowId: string): void {
     const window = this.windows.get(windowId)
     if (!window)
@@ -961,6 +1325,12 @@ export class ConnectionFilter {
     for (const window of [...this.windows.values()]) {
       if (window.surfaceId === surfaceId)
         this.closeWindow(window.windowId)
+    }
+
+    // 层表面还在而 wl_surface 没了，合成器会报错，所以先把弹窗的层表面收掉。
+    for (const popup of [...this.popups.values()]) {
+      if (popup.surfaceId === surfaceId)
+        this.destroyLayerPopup(popup)
     }
   }
 
