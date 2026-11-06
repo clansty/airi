@@ -1426,6 +1426,7 @@ export class ConnectionFilter {
 
     out.push(buildMessage(window.surfaceId, WL_SURFACE.commit, []))
     this.deps.sendToServer(Buffer.concat(out), [])
+    this.deps.log(`input region for ${window.windowId}: ${rects === null || rects === undefined ? 'the whole window' : `${rects.length} rect(s)`}`)
   }
 
   applyCommand(command: ProxyCommand): void {
