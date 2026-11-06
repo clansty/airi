@@ -77,7 +77,13 @@ export async function prepareLayerShellWindow(params: {
     return createPlainBinding(params.title)
 
   const display = screen.getDisplayMatching(params.bounds)
-  const options: LayerShellWindowOptions = { ...params.options, output: params.options.output ?? display.label }
+  const options: LayerShellWindowOptions = {
+    ...params.options,
+    output: params.options.output ?? display.label,
+    // 屏幕多大只有应用量得准：分数缩放下 `wl_output` 的 mode/scale 算不出真实逻辑尺寸，
+    // 而拖动要靠它保证整个窗口留在屏幕里。
+    outputSize: params.options.outputSize ?? { width: display.bounds.width, height: display.bounds.height },
+  }
 
   const attached = await manager.attach(params.windowId, options, toGeometry(display, params.bounds))
   if (!attached)

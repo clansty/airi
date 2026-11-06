@@ -23,6 +23,13 @@ export interface LayerShellWindowOptions {
    * 层表面的输出在创建时就固定，协议里没有换输出的请求，所以这是唯一能把窗口放到指定屏幕的办法。
    */
   output?: string
+  /**
+   * 这块屏幕在逻辑坐标下的尺寸，应用自己量到的那一份。
+   *
+   * 拖动要保证整个窗口留在屏幕里，而 `wl_output` 的 `mode` 除以 `scale` 在分数缩放时会算错
+   * （`scale` 是整数，`niri` 那样的 2.56 倍只能算出个错的长宽比），所以应用给了就以它为准。
+   */
+  outputSize?: { width: number, height: number }
 }
 
 /** 层表面的几何，坐标相对它所在输出的左上角。 */

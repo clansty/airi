@@ -233,11 +233,15 @@ describe('connection filter', () => {
     // 指针在窗口里的位置，按下时是 (10, 10)。
     harness.server(Buffer.concat([
       buildMessage(POINTER, 0, [1, SURFACE, 10 * 256, 10 * 256]),
+      buildMessage(POINTER, 3, [2, 0, 0x110, 1]),
     ]))
+    // 按下之后、客户端请求移动之前指针已经走了一点，这段位移也要算进去。
+    // motion 是「时间戳 + 坐标」，时间戳不是坐标，算进来就会把窗口甩到屏幕边上。
+    harness.server(buildMessage(POINTER, 2, [114211, 20 * 256, 20 * 256]))
     harness.client(buildMessage(TOPLEVEL, 5, [SEAT, 2]))
 
     harness.toServer.length = 0
-    harness.server(buildMessage(POINTER, 2, [130 * 256, 60 * 256]))
+    harness.server(buildMessage(POINTER, 2, [114233, 130 * 256, 60 * 256]))
 
     const margins = harness.toServer.find(message => message.opcode === LAYER.setMargin)
     expect(margins).toBeDefined()
@@ -245,7 +249,7 @@ describe('connection filter', () => {
     expect([reader.int(), reader.int(), reader.int(), reader.int()]).toEqual([150, 0, 0, 320])
 
     // 松手时把最终几何报给应用，应用的窗口位置只有它自己知道。
-    harness.server(buildMessage(POINTER, 3, [3, 0, 272, 0]))
+    harness.server(buildMessage(POINTER, 3, [3, 0, 0x110, 0]))
     expect(harness.events).toEqual([
       { type: 'attached', windowId: 'pet' },
       { type: 'geometry', windowId: 'pet', geometry: { x: 320, y: 150, width: 400, height: 600 } },
@@ -263,7 +267,7 @@ describe('connection filter', () => {
     harness.toServer.length = 0
 
     // 输出是 2560x1600，窗口 400x600，所以位置最多到 (2160, 1000)。
-    harness.server(buildMessage(POINTER, 2, [5000 * 256, 5000 * 256]))
+    harness.server(buildMessage(POINTER, 2, [0, 5000 * 256, 5000 * 256]))
 
     const margins = harness.toServer.find(message => message.opcode === LAYER.setMargin)
     const reader = new ArgumentReader(margins!.payload)
@@ -297,7 +301,7 @@ describe('connection filter', () => {
     // 右下角（bottom 2 | right 8）开始拉，指针往右下走 30x20。
     harness.client(buildMessage(TOPLEVEL, 6, [SEAT, 2, 10]))
     harness.toServer.length = 0
-    harness.server(buildMessage(POINTER, 2, [40 * 256, 30 * 256]))
+    harness.server(buildMessage(POINTER, 2, [0, 40 * 256, 30 * 256]))
 
     const sizes = harness.toServer.find(message => message.opcode === LAYER.setSize)
     const reader = new ArgumentReader(sizes!.payload)
@@ -338,6 +342,28 @@ describe('connection filter', () => {
     const reader = new ArgumentReader(margins!.payload)
     // 窗口在 (200, 100)，锚点相对窗口是 (21, 176)，两边都是右下角对齐，弹窗 163x28。
     expect([reader.int(), reader.int(), reader.int(), reader.int()]).toEqual([263, 0, 0, 68])
+  })
+
+  it('clamps with the screen size the app measured', () => {
+    // 分数缩放下 wl_output 的 mode/scale 算不出真实逻辑尺寸，应用报的才算。
+    const sized = new Map([['pet', { options: { ...options, outputSize: { width: 1000, height: 1600 } }, geometry }]])
+    const harness = createHarness(sized)
+    bootstrap(harness)
+    createWindow(harness, decorateWindowTitle('pet', 'AIRI'))
+    harness.client(buildMessage(SURFACE, 6, []))
+
+    harness.server(Buffer.concat([
+      buildMessage(POINTER, 0, [1, SURFACE, 0, 0]),
+      buildMessage(POINTER, 3, [2, 0, 0x110, 1]),
+    ]))
+    harness.client(buildMessage(TOPLEVEL, 5, [SEAT, 2]))
+    harness.toServer.length = 0
+
+    harness.server(buildMessage(POINTER, 2, [0, 5000 * 256, 5000 * 256]))
+
+    const margins = harness.toServer.find(message => message.opcode === LAYER.setMargin)
+    const reader = new ArgumentReader(margins!.payload)
+    expect([reader.int(), reader.int(), reader.int(), reader.int()]).toEqual([1000, 0, 0, 600])
   })
 
   it('applies geometry from the app', () => {

@@ -111,14 +111,16 @@ interface LayerWindow {
   geometry: LayerShellGeometry
   outputId: number
   outputName?: string
+  /** 应用报的屏幕逻辑尺寸，拖动算边界时优先用它。 */
+  outputSize?: { width: number, height: number }
   gesture?: Gesture
 }
 
 /**
  * 一次指针拖动。层表面拖不动，只能代理自己算。
  *
- * `startPointer` 记的是屏幕坐标：窗口跟着指针动，所以 surface 内的坐标每一刻都在变，
- * 拿它当基准会把位移算错。
+ * 按下期间合成器一直拿按下那一刻的几何量指针，所以 surface 内坐标就是「抓住窗口的位置 + 之后走过的全部距离」。
+ * 每步都从按下时算起，绝不在上一步的结果上累加，否则一次拖动会被放大成事件个数倍。
  */
 interface Gesture {
   mode: 'move' | 'resize'
@@ -126,6 +128,13 @@ interface Gesture {
   edges: number
   startPointer: { x: number, y: number }
   startGeometry: LayerShellGeometry
+}
+
+/** 最近一次按下：手势的位移基准就是它。 */
+interface Press {
+  surfaceId: number
+  x: number
+  y: number
 }
 
 interface OutputState {
@@ -260,8 +269,9 @@ export class ConnectionFilter {
   /** 弹窗所在的 wl_surface 号，`get_popup` 只给了 xdg_surface 号。 */
   private readonly surfaceByXdgSurface = new Map<number, number>()
 
-  /** 指针位置，坐标是相对 `surfaceId` 那个 surface 的。 */
+  /** 指针位置，坐标是相对 `surfaceId` 那个 surface 的，按下期间基准不跟着窗口动。 */
   private pointer = { x: 0, y: 0, surfaceId: 0, known: false }
+  private press: Press | undefined
   /** 客户端自己的 wl_registry 对象，代理绑全局要用它。 */
   private registryId: number | undefined
   private layerShellGlobalInfo: { name: number, version: number } | undefined
@@ -841,6 +851,7 @@ export class ConnectionFilter {
       geometry,
       outputId,
       outputName: options.output,
+      outputSize: options.outputSize,
     })
 
     this.pendingRoles = this.pendingRoles.filter(role => role !== pending)
@@ -1070,6 +1081,7 @@ export class ConnectionFilter {
     }
     else if (message.opcode === WL_POINTER.motion) {
       const reader = new ArgumentReader(message.payload)
+      reader.uint() // 时间戳，不是坐标
       this.pointer = { ...this.pointer, x: Math.round(reader.fixed()), y: Math.round(reader.fixed()), known: true }
 
       if (window?.gesture)
@@ -1082,12 +1094,18 @@ export class ConnectionFilter {
       reader.uint() // button
       const pressed = reader.uint() !== POINTER_BUTTON_RELEASED
 
-      if (!pressed && window?.gesture)
+      if (pressed) {
+        // 手势的位移基准是按下那一刻，Chromium 之后的 move / resize 也是按那次按下来的。
+        this.press = { surfaceId: this.pointer.surfaceId, x: this.pointer.x, y: this.pointer.y }
+      }
+      else if (window?.gesture) {
         this.endGesture(window)
+      }
     }
     else if (message.opcode === WL_POINTER.leave) {
+      // 按下期间合成器把指针栓在这个窗口上，拖到屏幕边缘还会继续送 motion，所以离开不等于松手。
       if (window?.gesture)
-        this.endGesture(window)
+        this.deps.log(`the pointer left the gesture on ${window.windowId}`)
     }
 
     return [message.raw]
@@ -1162,8 +1180,12 @@ export class ConnectionFilter {
   }
 
   private beginGesture(window: LayerWindow, mode: 'move' | 'resize', edges: number): void {
-    const pointer = this.globalPointer(window)
-    if (!pointer) {
+    // 按下那一刻的指针位置才是基准。等到这里再读当前位置，按下和请求之间走过的距离会丢。
+    const startPointer = this.press?.surfaceId === window.surfaceId
+      ? { x: this.press.x, y: this.press.y }
+      : { x: this.pointer.x, y: this.pointer.y }
+
+    if (!this.pointer.known && !this.press) {
       this.deps.log(`cannot drag ${window.windowId}: the pointer position is unknown`)
       return
     }
@@ -1171,11 +1193,11 @@ export class ConnectionFilter {
     window.gesture = {
       mode,
       edges,
-      startPointer: pointer,
+      startPointer,
       startGeometry: { ...window.geometry },
     }
     // 手势日志是排查「拖了没反应」的第一手材料。
-    this.deps.log(`${mode === 'move' ? 'moving' : `resizing on edges ${edges}`} ${window.windowId} from ${pointer.x},${pointer.y}`)
+    this.deps.log(`${mode === 'move' ? 'moving' : `resizing on edges ${edges}`} ${window.windowId} from ${startPointer.x},${startPointer.y}`)
   }
 
   private dragTo(window: LayerWindow): void {
@@ -1183,12 +1205,9 @@ export class ConnectionFilter {
     if (!gesture)
       return
 
-    const pointer = this.globalPointer(window)
-    if (!pointer)
-      return
-
-    const dx = pointer.x - gesture.startPointer.x
-    const dy = pointer.y - gesture.startPointer.y
+    // 每步都从按下时算起：合成器给的坐标基准一直是按下那套几何，把上一步加上去会重复计数。
+    const dx = this.pointer.x - gesture.startPointer.x
+    const dy = this.pointer.y - gesture.startPointer.y
     const next = this.clampToOutput(
       window,
       gesture.mode === 'move'
@@ -1210,52 +1229,40 @@ export class ConnectionFilter {
     this.deps.onEvent({ type: 'geometry', windowId: window.windowId, geometry: window.geometry })
   }
 
-  /**
-   * 指针的屏幕坐标。
-   *
-   * 指针事件带的是 surface 内的坐标，而 surface 自己也在动，所以要拿它当前的位置补齐。
-   * 每算一次都用最新几何，拖动就不会把上一步的位移重复计进去。
-   */
-  private globalPointer(fallback: LayerWindow): { x: number, y: number } | undefined {
-    if (!this.pointer.known)
-      return undefined
-
-    const origin = this.surfaceOrigin(this.pointer.surfaceId)
-      ?? { x: fallback.geometry.x, y: fallback.geometry.y }
-    return { x: origin.x + this.pointer.x, y: origin.y + this.pointer.y }
-  }
-
-  private surfaceOrigin(surfaceId: number): { x: number, y: number } | undefined {
-    for (const window of this.windows.values()) {
-      if (window.surfaceId === surfaceId)
-        return { x: window.geometry.x, y: window.geometry.y }
-    }
-
-    for (const popup of this.popups.values()) {
-      if (popup.surfaceId === surfaceId)
-        return popup.origin
-    }
-
-    return undefined
-  }
-
   /** 位置限制在输出内。层表面换不了输出，拖到边上就停住。 */
   private clampToOutput(window: LayerWindow, geometry: LayerShellGeometry): LayerShellGeometry {
+    const bounds = this.outputBounds(window)
+    if (!bounds)
+      return geometry
+
+    return {
+      ...geometry,
+      x: Math.min(Math.max(0, geometry.x), Math.max(0, bounds.width - geometry.width)),
+      y: Math.min(Math.max(0, geometry.y), Math.max(0, bounds.height - geometry.height)),
+    }
+  }
+
+  /**
+   * 屏幕的逻辑尺寸，也就是 margin 量的那套坐标。
+   *
+   * 应用量到的最准；`wl_output` 的 mode 除以整数 scale 在分数缩放下会算错长宽比，只当兜底。
+   */
+  private outputBounds(window: LayerWindow): { width: number, height: number } | undefined {
+    if (window.outputSize && window.outputSize.width > 0 && window.outputSize.height > 0)
+      return window.outputSize
+
     // 应用没指定输出时合成器自己挑；只有一块屏幕时就用它，不然拖动没法知道边界在哪。
     const output = this.outputs.get(window.outputId)
       ?? (this.outputs.size === 1 ? [...this.outputs.values()][0] : undefined)
     if (!output || output.width <= 0)
-      return geometry
+      return undefined
 
     const scale = Math.max(1, output.scale)
     const rotated = output.transform === 1 || output.transform === 3
-    const logicalWidth = Math.round((rotated ? output.height : output.width) / scale)
-    const logicalHeight = Math.round((rotated ? output.width : output.height) / scale)
-
+    // 除不尽时往下取：宁可让窗口早一点停住，也别让它跑到屏幕外面回不来。
     return {
-      ...geometry,
-      x: Math.min(Math.max(0, geometry.x), Math.max(0, logicalWidth - geometry.width)),
-      y: Math.min(Math.max(0, geometry.y), Math.max(0, logicalHeight - geometry.height)),
+      width: Math.floor((rotated ? output.height : output.width) / scale),
+      height: Math.floor((rotated ? output.width : output.height) / scale),
     }
   }
 

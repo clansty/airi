@@ -65,12 +65,16 @@ export function normalizeWindowOptions(options: LayerShellWindowOptions): LayerS
 
   const layer = options.layer ?? 'overlay'
   const keyboard = options.keyboard ?? 'none'
+  const size = options.outputSize
 
   return {
     namespace: options.namespace,
     layer,
     keyboard,
     output: options.output,
+    outputSize: size && size.width > 0 && size.height > 0
+      ? { width: Math.round(size.width), height: Math.round(size.height) }
+      : undefined,
   }
 }
 
