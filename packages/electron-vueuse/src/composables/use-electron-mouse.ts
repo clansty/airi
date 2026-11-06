@@ -15,6 +15,13 @@ let sharedEventTarget: EventTarget | undefined
 // from this position, because no later message brings it one.
 let lastPosition: Position | undefined
 let startedTracking = false
+/**
+ * 光标位置还作不作数。
+ *
+ * Wayland 下窗口外读不到任何坐标，位置会停在最后落在窗口里的那一点。拿这个位置算「指针贴着哪个边」会一直
+ * 算中，窗口的边框就一直闪。别的平台的位置是全局轮询来的，指针在哪都作数。
+ */
+const cursorPositionLive = ref(false)
 
 function publishPosition(position: Position | undefined) {
   if (position)
@@ -43,6 +50,7 @@ function trackFromPointerEvents() {
   let frame = 0
 
   useEventListener(window, 'pointermove', (event: PointerEvent) => {
+    cursorPositionLive.value = true
     pending = { x: event.clientX + windowX.value, y: event.clientY + windowY.value }
     // Pointer events arrive faster than frames. One send per frame is what the main process loop did, and it keeps
     // consumers that sample pixels per position from running on every event.
@@ -54,6 +62,12 @@ function trackFromPointerEvents() {
         publishPosition(position)
       })
     }
+  }, { passive: true })
+
+  // 指针一出这个窗口就没有坐标可读了。`pointerout` 带着空的相关目标，说明它去了窗口外面，而不是换了个元素。
+  useEventListener(window, 'pointerout', (event: PointerEvent) => {
+    if (!event.relatedTarget)
+      cursorPositionLive.value = false
   }, { passive: true })
 }
 
@@ -68,6 +82,8 @@ function startTracking(context: EventaContext) {
       }
 
       void defineInvoke(context, startLoopGetCursorScreenPoint)()
+      // 这个循环一直报，指针在窗口外面也是真的位置。
+      cursorPositionLive.value = true
     })
 }
 
@@ -90,4 +106,14 @@ export function useElectronMouseEventTarget() {
 export function useElectronMouse(options?: UseMouseOptions) {
   const eventTarget = useElectronMouseEventTarget()
   return useMouse({ ...options, initialValue: lastPosition ?? options?.initialValue, target: eventTarget, type: 'screen' })
+}
+
+/**
+ * 光标位置还作不作数，见 `cursorPositionLive`。
+ *
+ * 位置一过时，指针就已经不在这个窗口上了，只是最后一个位置还留在里面。
+ */
+export function useElectronCursorPositionLive() {
+  useElectronMouseEventTarget()
+  return cursorPositionLive
 }

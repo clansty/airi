@@ -6,7 +6,7 @@ export {
   useElectronEventaContext,
   useElectronEventaInvoke,
 } from './composables/use-electron-eventa-context'
-export { useElectronMouse, useElectronMouseEventTarget } from './composables/use-electron-mouse'
+export { useElectronCursorPositionLive, useElectronMouse, useElectronMouseEventTarget } from './composables/use-electron-mouse'
 export { useElectronMouseAroundWindowBorder } from './composables/use-electron-mouse-around-window-border'
 export type { UseMouseInElementReturn } from './composables/use-electron-mouse-in-element'
 export { useElectronMouseInElement } from './composables/use-electron-mouse-in-element'

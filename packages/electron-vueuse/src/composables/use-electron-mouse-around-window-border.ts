@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 
+import { useElectronCursorPositionLive } from './use-electron-mouse'
 import { useElectronRelativeMouse } from './use-electron-relative-mouse'
 import { useElectronWindowBounds } from './use-electron-window-bounds'
 
@@ -13,6 +14,10 @@ export interface UseElectronMouseAroundWindowBorderOptions {
 /**
  * Detect when the cursor is near the window border using window-relative mouse coords.
  * Fast path: no extra listeners; reuses existing mouse and window bounds streams.
+ *
+ * Every edge is false while the cursor position is out of date, which on Wayland is the whole time the pointer is
+ * outside the window. That position stays at the point where the pointer left, and a border that reads it stays on
+ * forever.
  */
 export function useElectronMouseAroundWindowBorder(
   options: UseElectronMouseAroundWindowBorderOptions = {},
@@ -22,13 +27,14 @@ export function useElectronMouseAroundWindowBorder(
 
   const { x, y } = useElectronRelativeMouse()
   const { width, height } = useElectronWindowBounds()
+  const cursorLive = useElectronCursorPositionLive()
 
   // Helpers to determine proximity to each edge. We allow a small overshoot so
   // users hovering slightly outside still get feedback to find the edge.
-  const nearLeft = computed(() => Math.abs(x.value) <= threshold && y.value > -overshoot && y.value < height.value + overshoot)
-  const nearRight = computed(() => Math.abs(x.value - width.value) <= threshold && y.value > -overshoot && y.value < height.value + overshoot)
-  const nearTop = computed(() => Math.abs(y.value) <= threshold && x.value > -overshoot && x.value < width.value + overshoot)
-  const nearBottom = computed(() => Math.abs(y.value - height.value) <= threshold && x.value > -overshoot && x.value < width.value + overshoot)
+  const nearLeft = computed(() => cursorLive.value && Math.abs(x.value) <= threshold && y.value > -overshoot && y.value < height.value + overshoot)
+  const nearRight = computed(() => cursorLive.value && Math.abs(x.value - width.value) <= threshold && y.value > -overshoot && y.value < height.value + overshoot)
+  const nearTop = computed(() => cursorLive.value && Math.abs(y.value) <= threshold && x.value > -overshoot && x.value < width.value + overshoot)
+  const nearBottom = computed(() => cursorLive.value && Math.abs(y.value - height.value) <= threshold && x.value > -overshoot && x.value < width.value + overshoot)
 
   const nearTopLeft = computed(() => nearTop.value && nearLeft.value)
   const nearTopRight = computed(() => nearTop.value && nearRight.value)
