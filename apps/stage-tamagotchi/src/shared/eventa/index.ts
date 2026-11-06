@@ -35,6 +35,7 @@ import type { Rectangle } from 'electron'
 import type { UpdateChannel } from '../update-channels'
 
 import { defineEventa, defineInvokeEventa } from '@moeru/eventa'
+import { electron as electronEventa } from '@proj-airi/electron-eventa'
 
 export const electronStartDraggingWindow = defineInvokeEventa('eventa:invoke:electron:start-dragging-window')
 
@@ -693,7 +694,7 @@ export const electronAppQuit = defineInvokeEventa<void>('eventa:invoke:electron:
  */
 export const electronAppGetVersion = defineInvokeEventa<string>('eventa:invoke:electron:app:get-version')
 /** Whether the app runs on the Wayland Ozone backend, where Electron cannot read the cursor position reliably. */
-export const electronAppIsWayland = defineInvokeEventa<boolean>('eventa:invoke:electron:app:is-wayland')
+export const electronAppIsWayland = electronEventa.app.isWayland
 /**
  * The main window mounted its page. The update launcher keeps a new bundle only when it reports healthy, so the page
  * calls it once it mounts, also after a page-only update reloaded it.
