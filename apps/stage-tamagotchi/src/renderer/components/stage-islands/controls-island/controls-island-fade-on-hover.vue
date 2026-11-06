@@ -8,6 +8,7 @@ import ControlButtonTooltip from './control-button-tooltip.vue'
 import ControlButton from './control-button.vue'
 
 import { noticeWindowEventa } from '../../../../shared/eventa'
+import { useAppIsWayland } from '../../../composables/use-app-is-wayland'
 import { useControlsIslandStore } from '../../../stores/controls-island'
 
 interface Props {
@@ -21,6 +22,12 @@ const props = withDefaults(defineProps<Props>(), {
 
 const uiStore = useControlsIslandStore()
 const enabled = computed(() => uiStore.fadeOnHoverEnabled)
+// NOTICE:
+// Wayland 上这个开关做不到它承诺的事：Electron 的 `setIgnoreMouseEvents` 在那里没有实现，让不开就只能淡出，
+// 而淡了却照旧吃点击，用户会以为穿透了。先藏起来，等能拿到全局光标位置（合成器的 cursor capture）再放出来。
+// Source: https://github.com/niri-wm/niri/pull/4554、`resolveFadeOnHoverInteraction` 里 `clickThroughAvailable`。
+// Removal: 淡出之后窗口真的能不再接收指针（层表面按输入区域让开）。
+const isWayland = useAppIsWayland()
 const { t } = useI18n()
 const { trackControlsIslandAction } = useAnalytics()
 
@@ -66,7 +73,7 @@ async function handleToggle() {
 </script>
 
 <template>
-  <ControlButtonTooltip>
+  <ControlButtonTooltip v-if="!isWayland">
     <ControlButton
       :button-style="props.buttonStyle"
       :aria-label="enabled ? t('tamagotchi.stage.controls-island.fade-on-hover.disable') : t('tamagotchi.stage.controls-island.fade-on-hover.enable')"
