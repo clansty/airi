@@ -41,13 +41,14 @@ import ControlsIsland from '../components/stage-islands/controls-island/index.vu
 import ResourceStatusIsland from '../components/stage-islands/resource-status-island/index.vue'
 import WindowResizeBorder from '../components/window-resize-border.vue'
 
-import { defaultFullscreenSurface, electronAppIsWayland, electronFullscreenExit, electronFullscreenSetMode, electronMainPageMounted, electronMainWindowEnterFullscreen, electronMainWindowGetFullscreenState, electronMainWindowSetFullscreenBounds, electronOpenInlay, electronOpenOnboarding, electronOpenSettings } from '../../shared/eventa'
+import { defaultFullscreenSurface, electronAppIsWayland, electronFullscreenExit, electronFullscreenSetMode, electronLayerShellInputRegion, electronMainPageMounted, electronMainWindowEnterFullscreen, electronMainWindowGetFullscreenState, electronMainWindowSetFullscreenBounds, electronOpenInlay, electronOpenOnboarding, electronOpenSettings } from '../../shared/eventa'
 import { fullscreenHostPages, fullscreenSurfaceOf } from '../components/fullscreen/surfaces'
 import { useModelSettingsRuntimeOwner } from '../composables/model-settings-runtime-owner'
 import { useFullscreenHost } from '../composables/use-fullscreen-host'
 import { provideFullscreenLayout } from '../composables/use-fullscreen-layout'
 import { usePushToTalkShortcut } from '../composables/use-push-to-talk-shortcut'
 import { useScreenAmbientLight } from '../composables/use-screen-ambient-light'
+import { useStageInputRegion } from '../composables/use-stage-input-region'
 import { stageOpaqueAttribute } from '../composables/use-stage-painted-mask'
 import { useControlsIslandStore } from '../stores/controls-island'
 import { useFullscreenStore } from '../stores/fullscreen'
@@ -645,6 +646,16 @@ watch(
   handleFadeOnHoverInteractionChange,
   { immediate: true },
 )
+
+// 层表面上只有画出来的地方接收指针，窗口其余部分是透明的，点击直接落到下面的应用。
+// 控制岛的按钮自带矩形，所以任何时候都点得到。没走层表面的窗口这个调用什么也不做。
+const setLayerShellInputRegion = useElectronEventaInvoke(electronLayerShellInputRegion)
+useStageInputRegion({
+  enabled: () => isWayland.value,
+  suspended: () => stagePaused.value || fullscreenActive.value || componentStateStage.value !== 'mounted',
+  canvas: () => stageCanvas.value,
+  apply: rects => void setLayerShellInputRegion({ rects }),
+})
 
 useModelSettingsRuntimeOwner({
   ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,

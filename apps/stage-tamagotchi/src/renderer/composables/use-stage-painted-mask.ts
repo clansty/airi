@@ -41,7 +41,7 @@ export const stageOpaqueAttribute = 'data-ambient-light-opaque'
  * Removal: when reka-ui exposes a way to pass attributes through the portal,
  * mark the content at the opener and drop the selector.
  */
-const paintedOverlaySelector = [
+export const paintedOverlaySelector = [
   `[${stageOpaqueAttribute}]`,
   '[data-reka-popper-content-wrapper]',
   '[role="dialog"]',

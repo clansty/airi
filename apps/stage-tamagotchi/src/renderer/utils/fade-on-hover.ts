@@ -14,6 +14,9 @@ export function resolveFadeOnHoverInteraction(params: {
    * On native Wayland it can stick stale, and Electron's `forward` flag for
    * ignored mouse events is unsupported on Linux, so a window that turns
    * click-through can never turn back. There the window must stay interactive.
+   *
+   * The fade needs the same answer: fading is a way of getting out of the way,
+   * and a faded window that still takes the click reads as a broken click-through.
    */
   clickThroughAvailable: boolean
   /** Whether Auto Hide is on. Drives the fade, never the blank-area click-through. */
@@ -22,6 +25,7 @@ export function resolveFadeOnHoverInteraction(params: {
   transparentForPointer: boolean
 }) {
   const fadeStage = params.enabled
+    && params.clickThroughAvailable
     && params.cursorInsideWindow
     && !params.transparentForFade
 

@@ -22,11 +22,11 @@ export interface LayerShellDisplayState {
 export const electronLayerShellDisplayGet = defineInvokeEventa<LayerShellDisplayState>('eventa:invoke:electron:layer-shell:display:get')
 
 /**
- * 这个窗口只在这些矩形里接收指针，其余地方穿透到下面的应用。空数组就是整窗穿透。
+ * 这个窗口只在这些矩形里接收指针，其余地方穿透到下面的应用。`null` 是整个窗口都接收，空数组是整窗穿透。
  *
  * 坐标是渲染进程的视图坐标；Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，所以走代理。
  */
-export const electronLayerShellInputRegion = defineInvokeEventa<void, { rects: { x: number, y: number, width: number, height: number }[] }>('eventa:invoke:electron:layer-shell:input-region')
+export const electronLayerShellInputRegion = defineInvokeEventa<void, { rects: { x: number, y: number, width: number, height: number }[] | null }>('eventa:invoke:electron:layer-shell:input-region')
 
 /** 重启应用。层表面的输出在窗口创建时就固定，换屏幕只能重开。 */
 export const electronAppRelaunch = defineInvokeEventa<void>('eventa:invoke:electron:app:relaunch')

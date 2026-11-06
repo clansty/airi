@@ -84,4 +84,19 @@ describe('fade on hover interaction', () => {
 
     expect(interaction.ignoreMouseEvents).toBe(false)
   })
+
+  // A faded window that still takes the click sends the user to the app below with nothing happening there.
+  it('does not fade where the window cannot get out of the way', () => {
+    const interaction = resolveFadeOnHoverInteraction({
+      alwaysOnTop: true,
+      cursorInsideWindow: true,
+      clickThroughAvailable: false,
+      enabled: true,
+      transparentForFade: false,
+      transparentForPointer: false,
+    })
+
+    expect(interaction.fadeStage).toBe(false)
+    expect(interaction.ignoreMouseEvents).toBe(false)
+  })
 })
