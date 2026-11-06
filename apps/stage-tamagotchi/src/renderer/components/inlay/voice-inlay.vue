@@ -3,7 +3,7 @@ import type { VoicePresenceView } from '@proj-airi/stage-ui/components/scenarios
 
 import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { VoicePresence } from '@proj-airi/stage-ui/components/scenarios/chat'
-import { useEventListener, useTimeoutFn } from '@vueuse/core'
+import { useEventListener, useResizeObserver, useTimeoutFn } from '@vueuse/core'
 import { nextTick, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -38,8 +38,9 @@ watch(shown, () => nextTick(() => hitTest()), { flush: 'post' })
  * Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，`useChatFloatingClickThrough` 那套在那里是空操作。
  */
 function reportInputRegion() {
-  const element = presence.value?.$el as HTMLElement | undefined
-  if (!element || shown.value === 'hidden') {
+  // The view mounts and unmounts its surface with a transition, so the element is null while it paints nothing.
+  const element = presence.value?.surface
+  if (shown.value === 'hidden' || !(element instanceof Element)) {
     void setInputRegion({ rects: [] })
     return
   }
@@ -52,7 +53,16 @@ function reportInputRegion() {
 
 onMounted(reportInputRegion)
 watch(shown, () => nextTick(reportInputRegion), { flush: 'post' })
+// The capsule grows into the card, and both animate their size. The region follows every step of the way, so a click
+// lands on what the user sees.
+useResizeObserver(() => presence.value?.surface, () => reportInputRegion())
 useEventListener(window, 'resize', () => nextTick(reportInputRegion))
+
+function onAfterEnter() {
+  hitTest()
+  // The enter animation scales the view, and a scaled rect is not the region to report. The rect settles when it ends.
+  void nextTick(reportInputRegion)
+}
 
 // Speech or a draft keeps the inlay where the user dragged it. Only an idle inlay returns home.
 const homeTimer = useTimeoutFn(() => void returnHome(), RETURN_HOME_DELAY_MS, { immediate: false })
@@ -75,7 +85,7 @@ useGlobalEscape('voice-inlay-dismiss', () => shown.value === 'capsule' || shown.
       ref="presence"
       data-testid="voice-inlay"
       @shown-change="shown = $event"
-      @after-enter="hitTest()"
+      @after-enter="onAfterEnter()"
       @after-leave="hitTest({ removed: true })"
     >
       <template #hint>

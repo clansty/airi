@@ -48,7 +48,8 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const controls = useVoiceControlsStore()
 // The card floats over the desktop in the inlay, so the host can draw native glass behind its translucent fill.
-useBackdropSurface(useTemplateRef<HTMLElement>('surface'))
+const surface = useTemplateRef<HTMLElement>('surface')
+useBackdropSurface(surface)
 const sessions = useChatSessionStore()
 const cards = useAiriCardStore()
 
@@ -165,6 +166,13 @@ defineExpose({
   /** The painted view. */
   shown,
   dismiss,
+  /**
+   * The element that the view paints, or `null` while it paints nothing.
+   *
+   * The root is a `<Transition>`, so `$el` is a placeholder node and not the surface. A window that sizes its input
+   * region to what the view paints needs this element.
+   */
+  surface,
 })
 </script>
 

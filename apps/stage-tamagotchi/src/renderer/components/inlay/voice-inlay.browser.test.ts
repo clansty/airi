@@ -18,10 +18,11 @@ import { createWindowBackdropHost } from '../../composables/window-backdrop'
 
 import 'virtual:uno.css'
 
-const { backdrop, returnHome, setIgnoreMouseEvents, registerShortcut, unregisterShortcut, shortcutListeners, cursor, isWayland } = vi.hoisted(() => ({
+const { backdrop, returnHome, setIgnoreMouseEvents, setInputRegion, registerShortcut, unregisterShortcut, shortcutListeners, cursor, isWayland } = vi.hoisted(() => ({
   backdrop: vi.fn<(request: { regions: BackdropRegion[] }) => Promise<WindowBackdropStatus>>(async () => ({ state: 'unsupported', reason: 'Browser test' })),
   returnHome: vi.fn(),
   setIgnoreMouseEvents: vi.fn(),
+  setInputRegion: vi.fn(),
   registerShortcut: vi.fn(async () => ({ ok: true })),
   unregisterShortcut: vi.fn(async () => {}),
   /** Global shortcut triggers that the main process sends to this window. */
@@ -35,11 +36,13 @@ const { backdrop, returnHome, setIgnoreMouseEvents, registerShortcut, unregister
 // The inlay talks to its Electron window through these IPC composables. The cursor starts outside the page.
 vi.mock('@proj-airi/electron-vueuse', async () => {
   const { shallowRef } = await import('vue')
-  const { electronAppIsWayland, electronInlayReturnHome, electronShortcutRegister, electronShortcutUnregister } = await import('../../../shared/eventa')
+  const { electronAppIsWayland, electronInlayReturnHome, electronLayerShellInputRegion, electronShortcutRegister, electronShortcutUnregister } = await import('../../../shared/eventa')
   const invokes = new Map<unknown, unknown>([
     [electronInlayReturnHome, returnHome],
     [electronShortcutRegister, registerShortcut],
     [electronShortcutUnregister, unregisterShortcut],
+    // The layer surface decides click-through with its input region, not with `setIgnoreMouseEvents`.
+    [electronLayerShellInputRegion, setInputRegion],
     // Not Wayland by default: the inlay window can stay click-through around its card.
     [electronAppIsWayland, () => Promise.resolve(isWayland.value)],
   ])
@@ -69,6 +72,7 @@ afterEach(() => {
   backdrop.mockResolvedValue({ state: 'unsupported', reason: 'Browser test' })
   returnHome.mockReset()
   setIgnoreMouseEvents.mockReset()
+  setInputRegion.mockReset()
   registerShortcut.mockClear()
   unregisterShortcut.mockClear()
 })
@@ -159,12 +163,25 @@ describe('voice inlay', () => {
     await expect.poll(() => setIgnoreMouseEvents.mock.calls.at(-1)).toEqual([[true, { forward: true }]])
   })
 
-  it('stays interactive on Wayland, where the cursor signal cannot drive click-through', async () => {
+  it('stays interactive on Wayland through the input region, where the cursor signal cannot drive click-through', async () => {
     isWayland.value = true
     renderInlay()
 
-    await expect.poll(() => setIgnoreMouseEvents.mock.calls.at(-1)).toEqual([[false, { forward: true }]])
+    // A hidden inlay paints nothing, so the window passes every click to the app below it.
+    await expect.poll(() => setInputRegion.mock.calls.at(-1)).toEqual([{ rects: [] }])
     expect(inlayView()).toBe('hidden')
+
+    publish({ drafts: [], input: { ...capturing, text: '', segments: [] } })
+    await expect.poll(inlayView).toBe('capsule')
+    const painted = () => {
+      const reported = setInputRegion.mock.calls.at(-1)?.[0] as { rects: { x: number, y: number, width: number, height: number }[] } | undefined
+      return reported?.rects[0]
+    }
+    // The capsule takes the pointer, and nothing else in the window does.
+    await expect.poll(() => painted()?.width).toBe(176)
+    const rect = document.querySelector('[data-testid="voice-inlay"]')!.getBoundingClientRect()
+    expect(painted()?.x).toBeCloseTo(rect.x, 1)
+    expect(painted()?.height).toBeCloseTo(rect.height, 1)
   })
 
   it('shows a capsule when capture starts, and grows into the card when text arrives', async () => {
