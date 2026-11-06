@@ -44,6 +44,11 @@ A drag follows the pointer only where the compositor arranges a layer surface on
 
 - The app starts one more process, and on Wayland it starts twice: the first process only starts the proxy and the second one runs the app.
 - A window on a layer surface cannot move to another display. The app must create it again there.
+- The floating chat keeps an ordinary toplevel, because it takes keyboard focus and the app shows it beside the
+  character. A Wayland session places it wherever the compositor decides, so the chat offers no attached placement
+  there. The saved placement stays, and the drag handle becomes an app-region drag that the compositor follows.
+- A cursor position on Wayland is known only while the pointer is over one of the app's surfaces. A window that reads
+  it must treat the last position as gone once the pointer leaves, or a resize border stays on forever.
 - A compositor-side resize is ignored, because the layer size belongs to the app.
 - Only windows with a `-webkit-app-region: drag` area can be dragged.
 - `koffi` is a new runtime dependency. It ships prebuilt binaries.

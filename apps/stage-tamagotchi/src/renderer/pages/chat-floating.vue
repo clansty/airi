@@ -33,6 +33,7 @@ import {
   electronChatFloatingStateChanged,
   electronChatWindowSetPreferences,
 } from '../../shared/eventa'
+import { useAppIsWayland } from '../composables/use-app-is-wayland'
 import { useChatDraftHandover } from '../composables/use-chat-draft-handover'
 import { dismissOverlays, useChatFloatingClickThrough } from '../composables/use-chat-floating-click-through'
 import { useControlsIslandStore } from '../stores/controls-island'
@@ -69,6 +70,8 @@ useChatDraftHandover(interactiveArea)
 
 // A free chat stays where the user drags it.
 const freePlacement = computed(() => state.value.placement === 'free')
+// Wayland 上客户端摆不了窗口，位置由合成器定，所以窗口挪到哪了应用也读不回来。
+const isWayland = useAppIsWayland()
 const danmaku = computed(() => state.value.danmaku)
 // The message feed has no glass and no fill. Its messages float over the
 // desktop, so a feed that fades out leaves nothing behind.
@@ -392,6 +395,23 @@ interface HeldPointer {
 /** `undefined` when no handle is held. */
 let heldPointer: HeldPointer | undefined
 
+/**
+ * 按在拖动手柄上开始移动窗口。
+ *
+ * NOTICE:
+ * Wayland 上位置归合成器，`window.setBounds` 的 x/y 不生效，自己算位置这条路走不通。那里改成把手柄标成
+ * `-webkit-app-region: drag`：Chromium 收到按下会发一次 `xdg_toplevel.move`，合成器跟着指针把窗口挪走。
+ * 代价是挪到哪了应用读不回来，所以那个会话里位置也存不下来。
+ * 根因：xdg_toplevel 没有「把窗口放到这」的请求，只有「开始跟随指针」。
+ * 来源：https://github.com/moeru-ai/airi/issues/2521，docs/ai/adr/2026-11-04-wayland-layer-shell-for-overlays.md
+ * 移除条件：合成器告诉客户端窗口的位置，或者重开会话时按别的办法恢复。
+ */
+function startMove(event: PointerEvent) {
+  if (isWayland.value)
+    return
+  holdPointer(event)
+}
+
 function holdPointer(event: PointerEvent, direction?: ResizeDirection) {
   const element = event.currentTarget as HTMLElement
   element.setPointerCapture(event.pointerId)
@@ -543,12 +563,13 @@ function moveByKeyboard(delta: WindowDelta) {
                 <button
                   :aria-label="t('tamagotchi.stage.chat-window.move')"
                   :class="[
-                    'h-7 w-5 shrink-0 cursor-grab touch-none rounded-full',
+                    'h-7 w-5 shrink-0 touch-none rounded-full',
                     'flex items-center justify-center outline-none transition-colors',
                     'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-300',
+                    isWayland ? '[-webkit-app-region:drag]' : 'cursor-grab',
                     dockItemClasses('blurry'),
                   ]"
-                  @pointerdown="holdPointer"
+                  @pointerdown="startMove"
                   @pointermove="moveWithHeldPointer"
                   @lostpointercapture="releasePointer"
                   @keydown="handleArrowKey($event, moveByKeyboard)"

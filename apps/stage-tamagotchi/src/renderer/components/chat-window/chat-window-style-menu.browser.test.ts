@@ -16,6 +16,7 @@ import 'virtual:uno.css'
 const mocks = vi.hoisted(() => ({
   getPreferences: vi.fn<() => Promise<ChatWindowPreferences>>(),
   setPreferences: vi.fn<(changes: Partial<ChatWindowPreferences>) => Promise<void>>(),
+  isWayland: vi.fn<() => Promise<boolean>>(),
 }))
 
 // NOTICE:
@@ -23,15 +24,20 @@ const mocks = vi.hoisted(() => ({
 // it, so the test controls when each saved choice settles.
 // Removal condition: browser tests running inside an Electron renderer.
 vi.mock('@proj-airi/electron-vueuse', async () => {
-  const { electronChatWindowGetPreferences } = await import('../../../shared/eventa')
+  const { electronAppIsWayland, electronChatWindowGetPreferences } = await import('../../../shared/eventa')
   return {
-    useElectronEventaInvoke: (event: unknown) => event === electronChatWindowGetPreferences ? mocks.getPreferences : mocks.setPreferences,
+    useElectronEventaInvoke: (event: unknown) => event === electronChatWindowGetPreferences
+      ? mocks.getPreferences
+      : event === electronAppIsWayland ? mocks.isWayland : mocks.setPreferences,
   }
 })
 
 let pinia: ReturnType<typeof createPinia>
 
 beforeEach(() => {
+  // The window is an ordinary one until a test says otherwise.
+  mocks.isWayland.mockReset()
+  mocks.isWayland.mockResolvedValue(false)
   // The experiments catalog offers the fullscreen mode only in the desktop app, and it reads the environment when the
   // store starts.
   vi.stubEnv('RUNTIME_ENVIRONMENT', 'electron')
@@ -170,6 +176,29 @@ describe('chatWindowStyleMenu', () => {
 
     await expect.element(page.getByRole('menuitemradio', { name: 'tamagotchi.stage.chat-window.style.legacy' })).toBeVisible()
     expect(page.getByRole('menuitemcheckbox').elements()).toHaveLength(0)
+  })
+
+  it('leaves the attached placement out where the session cannot place the window', async () => {
+    // ROOT CAUSE:
+    //
+    // A Wayland client cannot place its own window. The position comes from
+    // the compositor, and the x and y of `setBounds` do nothing. The chat
+    // cannot sit beside the character there, so the choice has nothing to
+    // switch.
+    mocks.isWayland.mockResolvedValue(true)
+    mocks.getPreferences.mockResolvedValue({ mode: 'floating', placement: 'free', danmaku: false, pinned: true })
+    const screen = await render(ChatWindowStyleMenu, {
+      global: { plugins: [pinia, createI18n({ legacy: false, locale: 'en', missingWarn: false, fallbackWarn: false, messages: { en: {} } })] },
+    })
+    onTestFinished(() => screen.unmount())
+    const trigger = page.getByRole('button', { name: 'tamagotchi.stage.chat-window.style.title' })
+    await expect.element(trigger).toBeEnabled()
+
+    await trigger.click()
+
+    await expect.element(page.getByRole('menuitemradio', { name: 'tamagotchi.stage.chat-window.style.floating' })).toBeVisible()
+    // The probe answers after the first render, so the absent choice arrives a moment later.
+    await vi.waitFor(() => expect(page.getByRole('menuitemcheckbox').elements()).toHaveLength(0))
   })
 
   it('shows the saved style again when a switch fails', async () => {

@@ -1,7 +1,7 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
 import type { InferOutput } from 'valibot'
 
-import type { ChatButtonState, ChatDraftHandover, ChatWindowMode, ChatWindowPreferences, FullscreenSurfaceId } from '../../../shared/eventa'
+import type { ChatButtonState, ChatDraftHandover, ChatFloatingPlacement, ChatWindowMode, ChatWindowPreferences, FullscreenSurfaceId } from '../../../shared/eventa'
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { McpManager } from '../../services/airi/mcp-servers'
@@ -28,6 +28,7 @@ import {
 import { focusWindow, showWindow } from '../../libs/electron/focus'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
+import { isWaylandSession } from '../../libs/electron/platform'
 import { createWindowContext } from '../../libs/electron/window-context'
 import { createReusableWindow } from '../../libs/electron/window-manager'
 import { customTitleBarWindowConfig, protectPrivilegedWindowNavigation } from '../shared'
@@ -145,6 +146,16 @@ export function setupChatWindowManager(params: {
   setupConfig()
   const getConfig = (): ChatWindowConfig => getConfigRaw() ?? defaultChatWindowConfig
 
+  /**
+   * 这个会话里真正能用的摆放方式。
+   *
+   * Wayland 上窗口位置由合成器定，`setBounds` 的 x/y 不生效，吸附在角色旁边要的位置算不出来。那里按 `free`
+   * 走。存的偏好不动：换回能摆窗口的会话，还是用户当初选的那个。
+   */
+  function placementInUse(): ChatFloatingPlacement {
+    return isWaylandSession() ? 'free' : getConfig().placement
+  }
+
   function getPreferences(): ChatWindowPreferences {
     const { mode, placement, danmaku, pinned } = getConfig()
     return { mode, placement, danmaku, pinned }
@@ -250,7 +261,7 @@ export function setupChatWindowManager(params: {
 
   const floating = setupFloatingChatWindow({
     getMainWindow: params.getMainWindow,
-    getPlacement: () => getConfig().placement,
+    getPlacement: () => placementInUse(),
     getDanmaku: () => getConfig().danmaku,
     getPinned: () => getConfig().pinned,
     getBounds: () => getConfig().floating,

@@ -17,6 +17,7 @@ import { computed, onMounted, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { electronChatWindowGetPreferences, electronChatWindowSetPreferences } from '../../../shared/eventa'
+import { useAppIsWayland } from '../../composables/use-app-is-wayland'
 import { chatHeaderButtonClass } from './chat-header-button'
 
 // The root is the menu, which renders no element, so a class from the parent
@@ -82,6 +83,13 @@ async function setAttached(attached: boolean) {
   await apply({ placement: attached ? 'attached' : 'free' })
 }
 
+// NOTICE:
+// Wayland 上客户端摆不了窗口，位置由合成器定，`setBounds` 的 x/y 不生效，吸附在角色旁边要的位置算不出来。
+// 那个会话里主进程也按 free 走，所以这里干脆不提供这个开关。
+// 根因：xdg_toplevel 没有「把窗口放到这」的请求。
+// 移除条件：合成器让应用摆自己的窗口，或者浮动聊天窗换成层表面。
+const isWayland = useAppIsWayland()
+
 const itemClasses = [
   'w-full flex cursor-pointer select-none items-center gap-2 rounded-lg px-3 py-2 text-left',
   'text-sm leading-none outline-none text-neutral-700 dark:text-neutral-200',
@@ -132,7 +140,7 @@ const itemClasses = [
         </DropdownMenuItemIndicator>
       </DropdownMenuRadioItem>
     </DropdownMenuRadioGroup>
-    <template v-if="preferences?.mode === 'floating'">
+    <template v-if="preferences?.mode === 'floating' && !isWayland">
       <DropdownMenuSeparator :class="['mx-2 h-px bg-neutral-200/80 dark:bg-neutral-700/80']" />
       <DropdownMenuCheckboxItem
         :model-value="preferences.placement === 'attached'"
