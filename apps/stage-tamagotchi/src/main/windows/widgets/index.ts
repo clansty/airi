@@ -1,4 +1,5 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
+import type { LayerShellManager } from '@proj-airi/electron-wayland-layer-shell'
 import type { BrowserWindow, Rectangle } from 'electron'
 import type { InferOutput } from 'valibot'
 
@@ -9,6 +10,7 @@ import type {
   WidgetsUpdatePayload,
 } from '../../../shared/eventa'
 import type { PluginModuleWidgetPayload } from '../../../shared/eventa/plugin/host'
+import type { LayerShellWindowBinding } from '../../libs/electron/layer-shell-window'
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 
@@ -23,6 +25,7 @@ import icon from '../../../../resources/icon.png?asset'
 import { widgetsClearEvent, widgetsIframeRequestEvent, widgetsRemoveEvent, widgetsRenderEvent, widgetsUpdateEvent } from '../../../shared/eventa'
 import { normalizeWidgetWindowSize } from '../../../shared/utils/electron/windows/window-size'
 import { showWindow } from '../../libs/electron/focus'
+import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
 import { createWindowContext } from '../../libs/electron/window-context'
@@ -218,9 +221,9 @@ function resolveWindowSizeFromPayload(payload: Pick<WidgetsAddPayload, 'componen
   return normalizeWidgetWindowSize(pluginModulePayload?.windowSize)
 }
 
-function createWidgetsWindow() {
+function createWidgetsWindow(title: string) {
   const window = new ElectronBrowserWindow({
-    title: 'Widgets',
+    title,
     width: 620,
     height: 760,
     show: false,
@@ -252,6 +255,8 @@ interface WidgetRecord extends WidgetSnapshot {
 
 interface WidgetWindowContext {
   widgetId: string
+  /** 层表面模式下的几何代理；没有层表面时是 undefined。 */
+  layerShell?: LayerShellWindowBinding
   currentRoute?: string
   disposeInvokes?: () => void
   eventa?: ReturnType<typeof createContext>
@@ -284,6 +289,7 @@ interface WidgetWindowContext {
 export function setupWidgetsWindowManager(params: {
   serverChannel: ServerChannel
   i18n: I18n
+  layerShell: LayerShellManager | undefined
 }): WidgetsWindowManager {
   const { setup, get: getConfigRaw, update } = createConfig('windows-widgets', 'config.json', widgetsWindowConfigSchema, {
     default: {},
@@ -381,27 +387,37 @@ export function setupWidgetsWindowManager(params: {
     windowContext.currentRoute = route
   }
 
-  function applyStoredOrDefaultBounds(window: BrowserWindow) {
+  function resolveStoredOrDefaultBounds(): Rectangle {
     const saved = getConfig().bounds
-    if (saved) {
-      const work = screen.getDisplayMatching(saved).workArea
-      const width = Math.min(saved.width, work.width)
-      const height = Math.min(saved.height, work.height)
-      const clamped: Rectangle = {
-        x: clamp(saved.x, work.x, work.x + work.width - width),
-        y: clamp(saved.y, work.y, work.y + work.height - height),
-        width,
-        height,
-      }
-      window.setBounds(clamped)
-      return
-    }
+    if (!saved)
+      return computeDefaultBounds()
 
-    window.setBounds(computeDefaultBounds())
+    const work = screen.getDisplayMatching(saved).workArea
+    const width = Math.min(saved.width, work.width)
+    const height = Math.min(saved.height, work.height)
+
+    return {
+      x: clamp(saved.x, work.x, work.x + work.width - width),
+      y: clamp(saved.y, work.y, work.y + work.height - height),
+      width,
+      height,
+    }
+  }
+
+  /** 层表面窗口的位置只能由代理设置，普通窗口交给 Electron。 */
+  function setWindowBounds(windowContext: WidgetWindowContext, window: BrowserWindow, bounds: Rectangle) {
+    if (windowContext.layerShell)
+      windowContext.layerShell.setBounds(bounds)
+    else
+      window.setBounds(bounds)
+  }
+
+  function currentWindowBounds(windowContext: WidgetWindowContext, window: BrowserWindow): Rectangle {
+    return windowContext.layerShell?.getBounds() ?? window.getBounds()
   }
 
   function applyWindowLayout(windowContext: WidgetWindowContext, window: BrowserWindow, snapshot?: Pick<WidgetSnapshot, 'windowSize'>) {
-    const display = screen.getDisplayMatching(window.getBounds())
+    const display = screen.getDisplayMatching(currentWindowBounds(windowContext, window))
     const work = display.workArea
     const windowSize = normalizeWidgetWindowSize(snapshot?.windowSize)
 
@@ -409,7 +425,7 @@ export function setupWidgetsWindowManager(params: {
       windowContext.persistBounds = true
       window.setMinimumSize(0, 0)
       window.setMaximumSize(work.width, work.height)
-      applyStoredOrDefaultBounds(window)
+      setWindowBounds(windowContext, window, resolveStoredOrDefaultBounds())
       return
     }
 
@@ -420,11 +436,11 @@ export function setupWidgetsWindowManager(params: {
     const maxHeight = clamp(windowSize.maxHeight ?? work.height, minHeight, work.height)
     const width = clamp(windowSize.width ?? minWidth, minWidth, maxWidth)
     const height = clamp(windowSize.height ?? minHeight, minHeight, maxHeight)
-    const currentBounds = window.getBounds()
+    const currentBounds = currentWindowBounds(windowContext, window)
 
     window.setMinimumSize(minWidth, minHeight)
     window.setMaximumSize(maxWidth, maxHeight)
-    window.setBounds({
+    setWindowBounds(windowContext, window, {
       x: clamp(currentBounds.x, work.x, work.x + work.width - width),
       y: clamp(currentBounds.y, work.y, work.y + work.height - height),
       width,
@@ -438,7 +454,18 @@ export function setupWidgetsWindowManager(params: {
     // manage events within eventa's context system.
     ipcMain.setMaxListeners(0)
 
-    const window = createWidgetsWindow()
+    // 层表面的几何和窗口 id 必须在窗口存在之前交给代理，代理按标题里的 id 认领 role。
+    const initialBounds = resolveStoredOrDefaultBounds()
+    windowContext.layerShell = await prepareLayerShellWindow({
+      manager: params.layerShell,
+      windowId: `widgets-${windowContext.widgetId || 'default'}`,
+      title: 'Widgets',
+      options: { namespace: 'airi-widgets', layer: 'overlay', keyboard: 'on-demand' },
+      bounds: initialBounds,
+    })
+
+    const window = createWidgetsWindow(windowContext.layerShell.title)
+    windowContext.layerShell.bindWindow(window)
     windowContext.window = window
     windowContext.eventa = createWindowContext(window)
 
@@ -472,14 +499,21 @@ export function setupWidgetsWindowManager(params: {
     }
 
     window.on('closed', handleWindowClosed)
-    applyStoredOrDefaultBounds(window)
+    setWindowBounds(windowContext, window, initialBounds)
 
     const persist = () => {
       if (windowContext.persistBounds)
-        update({ bounds: window.getBounds() })
+        update({ bounds: currentWindowBounds(windowContext, window) })
     }
     window.on('resize', persist)
     window.on('move', persist)
+    // 层表面拖动不会产生 Electron 的 move 事件，位置只能从代理那里拿。
+    const stopLayerShellBounds = windowContext.layerShell.onBoundsChanged(() => persist())
+    window.on('closed', () => {
+      stopLayerShellBounds()
+      windowContext.layerShell?.dispose()
+      windowContext.layerShell = undefined
+    })
 
     try {
       const disposeInvokes = await setupWidgetsWindowInvokes({

@@ -134,6 +134,7 @@ function createManager() {
   return setupWidgetsWindowManager({
     i18n: {} as never,
     serverChannel: {} as never,
+    layerShell: undefined,
   })
 }
 

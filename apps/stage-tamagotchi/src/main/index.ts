@@ -34,6 +34,7 @@ import { createGlobalAppConfig } from './configs/global'
 import { createIOTraceHubConfig } from './configs/io-trace-hub'
 import { createIOTraceRecordingConfig } from './configs/io-trace-recording'
 import { emitAppBeforeQuit, emitAppWindowAllClosed } from './libs/bootkit/lifecycle'
+import { setupLayerShellManager } from './libs/electron/layer-shell'
 import { getRendererRoot, setElectronMainDirname } from './libs/electron/location'
 import { createI18n } from './libs/i18n'
 import { setupAppleSpeechTranscriptionService } from './services/airi/apple-speech-transcription'
@@ -362,8 +363,13 @@ app.whenReady().then(async () => {
     },
   })
 
+  // Wayland 层表面代理（启动器拉起）。没有代理时这里是 undefined，所有窗口照旧。
+  const layerShell = injeca.provide('libs:wayland-layer-shell', {
+    build: () => setupLayerShellManager(),
+  })
+
   const widgetsManager = injeca.provide('windows:widgets', {
-    dependsOn: { serverChannel, i18n },
+    dependsOn: { serverChannel, i18n, layerShell },
     build: ({ dependsOn }) => setupWidgetsWindowManager(dependsOn),
   })
 
@@ -397,7 +403,7 @@ app.whenReady().then(async () => {
     build: ({ dependsOn }) => setupAboutWindowReusable(dependsOn),
   })
   const inlayWindow = injeca.provide('windows:inlay', {
-    dependsOn: { i18n, serverChannel, globalShortcut },
+    dependsOn: { i18n, serverChannel, globalShortcut, layerShell },
     build: ({ dependsOn }) => setupInlayWindowReusable(dependsOn),
   })
 
@@ -456,7 +462,7 @@ app.whenReady().then(async () => {
   })
 
   const mainWindow = injeca.provide('windows:main', {
-    dependsOn: { editorWindow, settingsWindow, workspaceWindow, chatWindow, widgetsManager, noticeWindow, beatSync, autoUpdater, serverChannel, godotStageManager, mcpManager, i18n, onboardingWindowManager, inlayWindow, appleSpeechTranscription, appleVision, ioTraceRecording, globalShortcut, spotlightWindow, devtoolsWindow: devtoolsMarkdownStressWindow },
+    dependsOn: { layerShell, editorWindow, settingsWindow, workspaceWindow, chatWindow, widgetsManager, noticeWindow, beatSync, autoUpdater, serverChannel, godotStageManager, mcpManager, i18n, onboardingWindowManager, inlayWindow, appleSpeechTranscription, appleVision, ioTraceRecording, globalShortcut, spotlightWindow, devtoolsWindow: devtoolsMarkdownStressWindow },
     build: async ({ dependsOn }) => setupMainWindow({
       ...dependsOn,
       onWindowCreated: (window) => {
@@ -492,7 +498,7 @@ app.whenReady().then(async () => {
   })
 
   const captionWindow = injeca.provide('windows:caption', {
-    dependsOn: { mainWindow, serverChannel, i18n },
+    dependsOn: { mainWindow, serverChannel, i18n, layerShell },
     build: async ({ dependsOn }) => setupCaptionWindowManager(dependsOn),
   })
 

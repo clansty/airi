@@ -1,3 +1,5 @@
+import type { LayerShellManager } from '@proj-airi/electron-wayland-layer-shell'
+
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { GlobalShortcutService } from '../../services/electron/global-shortcut'
@@ -7,10 +9,11 @@ import { isMacOS } from 'std-env'
 
 import icon from '../../../../resources/icon.png?asset'
 
+import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
 import { createReusableWindow } from '../../libs/electron/window-manager/reusable'
 import { protectPrivilegedWindowNavigation, setWindowAlwaysOnTop, transparentWindowConfig } from '../shared/window'
-import { INLAY_WINDOW_HEIGHT, inlayWindowBounds } from './bounds'
+import { inlayWindowBounds } from './bounds'
 import { setupInlayWindowInvokes } from './rpc/index.electron'
 
 /**
@@ -28,13 +31,26 @@ export function setupInlayWindowReusable(params: {
   serverChannel: ServerChannel
   i18n: I18n
   globalShortcut: GlobalShortcutService
+  layerShell: LayerShellManager | undefined
 }) {
   return createReusableWindow(async () => {
+    const initialBounds = inlayWindowBounds(screen.getPrimaryDisplay().workArea)
+    // 层表面的几何要在窗口存在之前登记：代理按标题里的窗口 id 认领 role。
+    const layerShell = await prepareLayerShellWindow({
+      manager: params.layerShell,
+      windowId: 'inlay',
+      title: 'Inlay',
+      options: { namespace: 'airi-inlay', layer: 'overlay', keyboard: 'none' },
+      bounds: initialBounds,
+    })
+
     const window = new BrowserWindow({
       ...transparentWindowConfig(),
-      title: 'Inlay',
-      width: 450,
-      height: INLAY_WINDOW_HEIGHT,
+      title: layerShell.title,
+      x: initialBounds.x,
+      y: initialBounds.y,
+      width: initialBounds.width,
+      height: initialBounds.height,
       show: false,
       resizable: false,
       maximizable: false,
@@ -47,6 +63,8 @@ export function setupInlayWindowReusable(params: {
       },
     })
 
+    layerShell.bindWindow(window)
+
     if (isMacOS) {
       window.setWindowButtonVisibility(false)
       window.setHiddenInMissionControl(true)
@@ -58,7 +76,7 @@ export function setupInlayWindowReusable(params: {
 
     const place = () => {
       if (!window.isDestroyed())
-        window.setBounds(inlayWindowBounds(screen.getPrimaryDisplay().workArea))
+        layerShell.setBounds(inlayWindowBounds(screen.getPrimaryDisplay().workArea))
     }
     place()
     // A resolution change, a moved Dock, or another primary display moves the work area under the fixed window.

@@ -353,6 +353,7 @@ catalog:
   jszip: ^3.10.1
   katex: 0.19.0
   knip: ^6.32.2
+  koffi: ^3.3.6
   kokoro-js: ^1.2.1
   kysely: 0.29.5
   less: ^4.9.0
@@ -519,6 +520,7 @@ allowBuilds:
   esbuild: true
   ffmpeg-static: true
   isolated-vm: true
+  koffi: false # Packages the prebuilt binaries. The install script only rebuilds them from source.
   less: true
   msw: true
   node-pty: true

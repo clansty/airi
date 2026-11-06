@@ -1,7 +1,9 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
+import type { LayerShellManager } from '@proj-airi/electron-wayland-layer-shell'
 import type { BrowserWindow, BrowserWindowConstructorOptions, Rectangle } from 'electron'
 import type { InferOutput } from 'valibot'
 
+import type { LayerShellWindowBinding } from '../../libs/electron/layer-shell-window'
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 
@@ -19,6 +21,7 @@ import icon from '../../../../resources/icon.png?asset'
 import { captionGetIsFollowingWindow, captionIsFollowingWindowChanged } from '../../../shared/eventa'
 import { clampBoundsWithinRect } from '../../../shared/utils/electron/display'
 import { focusWindow, showWindow } from '../../libs/electron/focus'
+import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
 import { createWindowContext } from '../../libs/electron/window-context'
@@ -100,9 +103,9 @@ function computeInitialCaptionBounds(params: { mainWindow: BrowserWindow, captio
   return { ...initial, ...params.captionOptions }
 }
 
-function createCaptionWindow(options?: BrowserWindowConstructorOptions) {
+function createCaptionWindow(title = 'Caption', options?: BrowserWindowConstructorOptions) {
   const window = new ElectronBrowserWindow({
-    title: 'Caption',
+    title,
     width: 480,
     height: 180,
     show: false,
@@ -143,6 +146,7 @@ export function setupCaptionWindowManager(params: {
   mainWindow: BrowserWindow
   serverChannel: ServerChannel
   i18n: I18n
+  layerShell: LayerShellManager | undefined
 }) {
   const matrixHash = computeDisplayMatrixHash()
 
@@ -160,6 +164,8 @@ export function setupCaptionWindowManager(params: {
 
   let isFollowing = getConfig().isFollowing ?? true
   let lastProgrammaticMoveAt = 0
+  /** 当前字幕窗口的层表面绑定（窗口重建时会换）。 */
+  let layerShellBinding: LayerShellWindowBinding | undefined
 
   // Keep references to listeners so we can detach when toggling
   let detachMainMoveListener: (() => void) | undefined
@@ -300,7 +306,24 @@ export function setupCaptionWindowManager(params: {
     // manage events within eventa's context system.
     ipcMain.setMaxListeners(0)
 
-    const window = createCaptionWindow()
+    // 字幕窗口的初始几何要在建窗口之前交给层表面代理，代理按标题里的窗口 id 认领 role。
+    const savedBounds = getConfig()?.matrices?.[matrixHash]?.bounds
+    const initialBounds = savedBounds
+      ? clampBoundsWithinRect(savedBounds, screen.getDisplayMatching(savedBounds).workArea)
+      : computeInitialCaptionBounds({ mainWindow: params.mainWindow })
+
+    const layerShell = await prepareLayerShellWindow({
+      manager: params.layerShell,
+      windowId: 'caption',
+      title: 'Caption',
+      options: { namespace: 'airi-caption', layer: 'overlay', keyboard: 'none' },
+      bounds: initialBounds,
+    })
+
+    const window = createCaptionWindow(layerShell.title)
+    layerShell.bindWindow(window)
+    layerShell.setBounds(initialBounds)
+    layerShellBinding = layerShell
     currentWindow = window
     const { context } = createWindowContext(window)
     eventaContext = context
@@ -308,19 +331,6 @@ export function setupCaptionWindowManager(params: {
     await setupBaseWindowElectronInvokes({ context, window, serverChannel: params.serverChannel, i18n: params.i18n })
 
     applyIgnoreMouseEvents(window, isFollowing)
-
-    const cfg = getConfig()
-    const saved = cfg?.matrices?.[matrixHash]?.bounds
-
-    if (saved) {
-      const workArea = screen.getDisplayMatching(saved).workArea
-      const clamped = clampBoundsWithinRect(saved, workArea)
-      window.setBounds(clamped)
-    }
-    else {
-      const initialBounds = computeInitialCaptionBounds({ mainWindow: params.mainWindow })
-      window.setBounds(initialBounds)
-    }
 
     const persistBounds = () => {
       const config = getConfig() ?? { isFollowing, matrices: {} }
@@ -430,11 +440,14 @@ export function setupCaptionWindowManager(params: {
     // Prevent user-move persistence from overwriting our programmatic move
     lastProgrammaticMoveAt = Date.now()
     const initialBounds = computeInitialCaptionBounds({ mainWindow: params.mainWindow })
-    window.setBounds(initialBounds)
+    if (layerShellBinding)
+      layerShellBinding.setBounds(initialBounds)
+    else
+      window.setBounds(initialBounds)
 
     // Persist new bounds and a clean relative offset so follow uses it
     const config = getConfig() ?? { isFollowing, matrices: {} }
-    const b = window.getBounds()
+    const b = layerShellBinding?.getBounds() ?? window.getBounds()
 
     const rel = computeRelativeOffset(window)
     config.matrices[matrixHash] = { ...config.matrices[matrixHash], bounds: b, relativeToMain: rel }

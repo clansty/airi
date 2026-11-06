@@ -1,3 +1,4 @@
+import type { LayerShellManager } from '@proj-airi/electron-wayland-layer-shell'
 import type { Rectangle } from 'electron'
 import type { InferOutput } from 'valibot'
 
@@ -35,6 +36,7 @@ import icon from '../../../../resources/icon.png?asset'
 import { electronFullscreenExit, electronFullscreenOpen, electronFullscreenPack, electronFullscreenRequestClose, electronFullscreenSetMode, electronFullscreenSurfaceChanged, electronMainWindowEnterFullscreen, electronMainWindowGetFullscreenState, electronMainWindowSetFullscreenBounds, electronStartDraggingWindow } from '../../../shared/eventa'
 import { shouldOpenDevTools } from '../../libs/electron/devtools'
 import { isWindowFocusIgnored, showWindow } from '../../libs/electron/focus'
+import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
 import { createWindowContext } from '../../libs/electron/window-context'
@@ -58,6 +60,8 @@ const appConfigSchema = object({
 type AppConfig = InferOutput<typeof appConfigSchema>
 
 export async function setupMainWindow(params: {
+  /** Wayland 层表面代理；没有代理时窗口照旧是普通窗口。 */
+  layerShell: LayerShellManager | undefined
   editorWindow: EditorWindowManager
   settingsWindow: SettingsWindowManager
   chatWindow: ChatWindowManager
@@ -109,12 +113,32 @@ export async function setupMainWindow(params: {
 
   const mainWindowConfig = getConfig().windows?.find(w => w.title === 'AIRI' && w.tag === 'main')
 
-  const window = new BrowserWindow({
+  const initialWidth = mainWindowConfig?.width ?? 450.0
+  const initialHeight = mainWindowConfig?.height ?? 600.0
+  const initialDisplay = screen.getPrimaryDisplay()
+  const initialBounds: Rectangle = {
+    x: mainWindowConfig?.x ?? Math.round(initialDisplay.bounds.x + (initialDisplay.bounds.width - initialWidth) / 2),
+    y: mainWindowConfig?.y ?? Math.round(initialDisplay.bounds.y + (initialDisplay.bounds.height - initialHeight) / 2),
+    width: initialWidth,
+    height: initialHeight,
+  }
+
+  // 层表面没有窗管可以帮忙摆位置，几何必须在窗口存在之前就交给代理：
+  // 代理按标题里的窗口 id 认领 role，晚一步这个窗口就只能是普通窗口了。
+  const layerShell = await prepareLayerShellWindow({
+    manager: params.layerShell,
+    windowId: 'main',
     title: 'AIRI',
-    width: mainWindowConfig?.width ?? 450.0,
-    height: mainWindowConfig?.height ?? 600.0,
-    x: mainWindowConfig?.x,
-    y: mainWindowConfig?.y,
+    options: { namespace: 'airi-pet', layer: 'overlay', keyboard: 'on-demand' },
+    bounds: initialBounds,
+  })
+
+  const window = new BrowserWindow({
+    title: layerShell.title,
+    width: initialBounds.width,
+    height: initialBounds.height,
+    x: initialBounds.x,
+    y: initialBounds.y,
     show: false,
     icon,
     webPreferences: {
@@ -128,6 +152,8 @@ export async function setupMainWindow(params: {
     type: isMacOS ? 'panel' : undefined,
     ...transparentWindowConfig(),
   })
+
+  layerShell.bindWindow(window)
 
   if (params.onWindowCreated) {
     params.onWindowCreated(window)
@@ -152,8 +178,18 @@ export async function setupMainWindow(params: {
    * returns to move to the center instead.
    */
   function centerWindow(): Rectangle {
-    if (!boundsBeforeFullscreen)
-      return centerWindowOnDisplay(window)
+    if (!boundsBeforeFullscreen) {
+      if (!layerShell.active)
+        return centerWindowOnDisplay(window)
+
+      const bounds = layerShell.getBounds() ?? window.getBounds()
+      const centered = computeCenteredWindowBounds({
+        displayWorkArea: screen.getDisplayMatching(bounds).workArea,
+        windowBounds: bounds,
+      })
+      layerShell.setBounds(centered)
+      return centered
+    }
     boundsBeforeFullscreen = computeCenteredWindowBounds({
       displayWorkArea: screen.getDisplayMatching(boundsBeforeFullscreen).workArea,
       windowBounds: boundsBeforeFullscreen,
@@ -196,8 +232,11 @@ export async function setupMainWindow(params: {
     updateConfig(config)
   }
 
-  window.on('resize', () => handleNewBounds(window.getBounds()))
-  window.on('move', () => handleNewBounds(window.getBounds()))
+  window.on('resize', () => handleNewBounds(layerShell.getBounds() ?? window.getBounds()))
+  window.on('move', () => handleNewBounds(layerShell.getBounds() ?? window.getBounds()))
+  // 层表面模式下用户拖动不会产生 Electron 的 move 事件，位置只能从代理那里拿。
+  const stopLayerShellBounds = layerShell.onBoundsChanged(handleNewBounds)
+  window.once('closed', () => stopLayerShellBounds())
 
   // Thanks to [@HeartArmy](https://github.com/HeartArmy) for the tip implementation.
   //
@@ -324,7 +363,7 @@ export async function setupMainWindow(params: {
     fullscreenLog.log(`Leaving fullscreen mode: ${reason}`)
     const bounds = boundsBeforeFullscreen
     boundsBeforeFullscreen = undefined
-    window.setBounds(bounds)
+    layerShell.setBounds(bounds)
     applyPin()
     params.chatWindow.setMainWindowCovered(false)
     params.onFullscreenChange?.(false)
@@ -343,7 +382,7 @@ export async function setupMainWindow(params: {
   })
   defineInvokeHandler(fullscreenContext, electronMainWindowEnterFullscreen, () => {
     if (!boundsBeforeFullscreen) {
-      boundsBeforeFullscreen = window.getBounds()
+      boundsBeforeFullscreen = layerShell.getBounds() ?? window.getBounds()
       fullscreenLog.log('Entering fullscreen mode')
       applyPin()
       window.setIgnoreMouseEvents(false)
@@ -359,11 +398,11 @@ export async function setupMainWindow(params: {
       throw new Error('The main window is not in fullscreen mode')
     const { bounds, duration, delay, curve } = payload
     if (!duration) {
-      window.setBounds(bounds)
+      layerShell.setBounds(bounds)
       return
     }
     // A glide moves the window and keeps its size, so the page content moves with it and never blinks.
-    const start = window.getBounds()
+    const start = layerShell.getBounds() ?? window.getBounds()
     const state = { x: start.x, y: start.y }
     return new Promise<void>((resolve) => {
       const glide = {
@@ -382,7 +421,7 @@ export async function setupMainWindow(params: {
             // Source: https://github.com/electron/electron/issues/9477
             // Removal: Electron keeps the size of a window that `setPosition` moves.
             if (!window.isDestroyed())
-              window.setBounds({ x: state.x, y: state.y, width: bounds.width, height: bounds.height })
+              layerShell.setBounds({ x: state.x, y: state.y, width: bounds.width, height: bounds.height })
           },
           onComplete: () => {
             if (fullscreenGlide === glide)
