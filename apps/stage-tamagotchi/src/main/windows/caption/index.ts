@@ -20,6 +20,7 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { captionGetIsFollowingWindow, captionIsFollowingWindowChanged } from '../../../shared/eventa'
 import { clampBoundsWithinRect } from '../../../shared/utils/electron/display'
+import { resolveLayerShellDisplay } from '../../libs/electron/app-config'
 import { focusWindow, showWindow } from '../../libs/electron/focus'
 import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
@@ -318,6 +319,7 @@ export function setupCaptionWindowManager(params: {
       title: 'Caption',
       options: { namespace: 'airi-caption', layer: 'overlay', keyboard: 'none' },
       bounds: initialBounds,
+      display: params.layerShell ? resolveLayerShellDisplay() : undefined,
     })
 
     const window = createCaptionWindow(layerShell.title)

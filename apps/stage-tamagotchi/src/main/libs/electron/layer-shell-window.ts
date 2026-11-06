@@ -48,6 +48,23 @@ function toBounds(display: Display, geometry: LayerShellGeometry): Rectangle {
   }
 }
 
+/** 几何整个落在屏幕里就照旧，否则保持尺寸挪到屏幕中间。 */
+function projectOntoDisplay(display: Display, bounds: Rectangle): Rectangle {
+  const inside = bounds.x >= display.bounds.x
+    && bounds.y >= display.bounds.y
+    && bounds.x + bounds.width <= display.bounds.x + display.bounds.width
+    && bounds.y + bounds.height <= display.bounds.y + display.bounds.height
+  if (inside)
+    return bounds
+
+  return {
+    x: Math.round(display.bounds.x + (display.bounds.width - bounds.width) / 2),
+    y: Math.round(display.bounds.y + (display.bounds.height - bounds.height) / 2),
+    width: bounds.width,
+    height: bounds.height,
+  }
+}
+
 /** 边的位值和代理那边一致。 */
 const EDGE = { top: 1, bottom: 2, left: 4, right: 8 } as const
 
@@ -101,12 +118,18 @@ export async function prepareLayerShellWindow(params: {
   options: LayerShellWindowOptions
   /** 窗口将要出现的几何，全局坐标。 */
   bounds: Rectangle
+  /**
+   * 层表面窗口只能待在指定的屏幕上：层表面的输出在创建时固定，之后换不了。
+   * 传了就按它算，几何落在它外面时挪到它中间。
+   */
+  display?: Display
 }): Promise<LayerShellWindowBinding> {
   const { manager } = params
   if (!manager)
     return createPlainBinding(params.title)
 
-  const display = screen.getDisplayMatching(params.bounds)
+  const display = params.display ?? screen.getDisplayMatching(params.bounds)
+  const bounds = projectOntoDisplay(display, params.bounds)
   const options: LayerShellWindowOptions = {
     ...params.options,
     output: params.options.output ?? display.label,
@@ -115,12 +138,12 @@ export async function prepareLayerShellWindow(params: {
     outputSize: params.options.outputSize ?? { width: display.bounds.width, height: display.bounds.height },
   }
 
-  const attached = await manager.attach(params.windowId, options, toGeometry(display, params.bounds))
+  const attached = await manager.attach(params.windowId, options, toGeometry(display, bounds))
   if (!attached)
     return createPlainBinding(params.title)
 
   let window: BrowserWindow | undefined
-  let current: LayerShellGeometry = toGeometry(display, params.bounds)
+  let current: LayerShellGeometry = toGeometry(display, bounds)
   // 先按「会变成层表面」处理；合成器拒绝后由事件推翻，并把最后一次几何写回普通窗口。
   let layer = true
   const listeners = new Set<(bounds: Rectangle) => void>()

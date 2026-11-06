@@ -24,6 +24,7 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { widgetsClearEvent, widgetsIframeRequestEvent, widgetsRemoveEvent, widgetsRenderEvent, widgetsUpdateEvent } from '../../../shared/eventa'
 import { normalizeWidgetWindowSize } from '../../../shared/utils/electron/windows/window-size'
+import { resolveLayerShellDisplay } from '../../libs/electron/app-config'
 import { showWindow } from '../../libs/electron/focus'
 import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
@@ -462,6 +463,7 @@ export function setupWidgetsWindowManager(params: {
       title: 'Widgets',
       options: { namespace: 'airi-widgets', layer: 'overlay', keyboard: 'on-demand' },
       bounds: initialBounds,
+      display: params.layerShell ? resolveLayerShellDisplay() : undefined,
     })
 
     const window = createWidgetsWindow(windowContext.layerShell.title)

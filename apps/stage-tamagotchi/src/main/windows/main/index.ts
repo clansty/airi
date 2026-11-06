@@ -1,6 +1,5 @@
 import type { LayerShellManager } from '@proj-airi/electron-wayland-layer-shell'
 import type { Rectangle } from 'electron'
-import type { InferOutput } from 'valibot'
 
 import type { FullscreenMode, FullscreenOpenRequest, FullscreenSurfaceId } from '../../../shared/eventa'
 import type { I18n } from '../../libs/i18n'
@@ -29,16 +28,15 @@ import { defu } from 'defu'
 import { BrowserWindow, ipcMain, screen } from 'electron'
 import { Mutex } from 'es-toolkit/promise'
 import { isLinux, isMacOS } from 'std-env'
-import { array, number, object, optional, string } from 'valibot'
 
 import icon from '../../../../resources/icon.png?asset'
 
 import { electronFullscreenExit, electronFullscreenOpen, electronFullscreenPack, electronFullscreenRequestClose, electronFullscreenSetMode, electronFullscreenSurfaceChanged, electronMainWindowEnterFullscreen, electronMainWindowGetFullscreenState, electronMainWindowSetFullscreenBounds, electronStartDraggingWindow } from '../../../shared/eventa'
+import { readAppConfig, resolveLayerShellDisplay, updateAppConfig, watchLayerShellDisplay } from '../../libs/electron/app-config'
 import { shouldOpenDevTools } from '../../libs/electron/devtools'
 import { isWindowFocusIgnored, showWindow } from '../../libs/electron/focus'
 import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
-import { createConfig } from '../../libs/electron/persistence'
 import { createWindowContext } from '../../libs/electron/window-context'
 import { setupSettingsPageInvokes } from '../settings/rpc/index.electron'
 import { protectPrivilegedWindowNavigation, setWindowAlwaysOnTop, transparentWindowConfig } from '../shared'
@@ -46,18 +44,7 @@ import { centerWindowOnDisplay, computeCenteredWindowBounds } from '../shared/di
 import { hideOnClose } from './hide-on-close'
 import { setupMainWindowElectronInvokes } from './rpc/index.electron'
 
-const appConfigSchema = object({
-  windows: optional(array(object({
-    title: optional(string()),
-    tag: string(),
-    x: optional(number()),
-    y: optional(number()),
-    width: optional(number()),
-    height: optional(number()),
-  }))),
-})
-
-type AppConfig = InferOutput<typeof appConfigSchema>
+type AppConfig = ReturnType<typeof readAppConfig>
 
 export async function setupMainWindow(params: {
   /** Wayland 层表面代理；没有代理时窗口照旧是普通窗口。 */
@@ -99,23 +86,19 @@ export async function setupMainWindow(params: {
    */
   onKeepAbove?: (keepAbove: (above: boolean) => void) => void
 }) {
-  const {
-    setup: setupConfig,
-    get: getConfigRaw,
-    update: updateConfig,
-  } = createConfig('app', 'config.json', appConfigSchema, {
-    default: { windows: [] },
-    autoHeal: true,
-  })
-  const getConfig = (): AppConfig => getConfigRaw() ?? { windows: [] }
+  const getConfig = (): AppConfig => readAppConfig()
+  const updateConfig = (config: AppConfig) => updateAppConfig(config)
 
-  setupConfig()
+  // 屏幕拔掉之后，用户选中的那块没了就把设置清掉，下次开窗口回主屏。
+  if (params.layerShell)
+    watchLayerShellDisplay()
 
   const mainWindowConfig = getConfig().windows?.find(w => w.title === 'AIRI' && w.tag === 'main')
 
   const initialWidth = mainWindowConfig?.width ?? 450.0
   const initialHeight = mainWindowConfig?.height ?? 600.0
-  const initialDisplay = screen.getPrimaryDisplay()
+  // 层表面模式下窗口固定去用户选的那块屏，别的屏上存的坐标没有意义。
+  const initialDisplay = params.layerShell ? resolveLayerShellDisplay() : screen.getPrimaryDisplay()
   const initialBounds: Rectangle = {
     x: mainWindowConfig?.x ?? Math.round(initialDisplay.bounds.x + (initialDisplay.bounds.width - initialWidth) / 2),
     y: mainWindowConfig?.y ?? Math.round(initialDisplay.bounds.y + (initialDisplay.bounds.height - initialHeight) / 2),
@@ -131,6 +114,8 @@ export async function setupMainWindow(params: {
     title: 'AIRI',
     options: { namespace: 'airi-pet', layer: 'overlay', keyboard: 'on-demand' },
     bounds: initialBounds,
+    // 层表面跑在用户选的那块屏上；没选就是窗口自己保存的位置说了算。
+    display: params.layerShell ? resolveLayerShellDisplay() : undefined,
   })
 
   const window = new BrowserWindow({

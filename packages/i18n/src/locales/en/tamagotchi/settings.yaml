@@ -43,6 +43,15 @@ pages:
       section:
         window-shortcuts:
           title: Keyboard Shortcuts
+    display:
+      title: Screen
+      description: The screen the desktop character and its overlays show on.
+      follow-window: Follow the saved window position
+      primary: Primary
+      saved: Screen saved
+      failed: Could not save the screen
+      hint: A layer surface keeps its screen for life, so a change applies the next time the window opens.
+      inactive: This session shows the windows as normal windows, so there is no screen to choose.
     window-shortcuts:
       description: Modify the window shortcuts.
       title: Window Shortcuts

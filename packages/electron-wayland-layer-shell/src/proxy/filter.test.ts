@@ -298,14 +298,39 @@ describe('connection filter', () => {
     harness.client(buildMessage(SURFACE, 6, []))
 
     harness.server(buildMessage(POINTER, 0, [1, SURFACE, 10 * 256, 10 * 256]))
-    // 右下角（bottom 2 | right 8）开始拉，指针往右下走 30x20。
-    harness.client(buildMessage(TOPLEVEL, 6, [SEAT, 2, 10]))
+    // 右下角开始拉（协议里右下角是 6），指针往右下走 30x20。
+    harness.client(buildMessage(TOPLEVEL, 6, [SEAT, 2, 6]))
     harness.toServer.length = 0
     harness.server(buildMessage(POINTER, 2, [0, 40 * 256, 30 * 256]))
 
     const sizes = harness.toServer.find(message => message.opcode === LAYER.setSize)
     const reader = new ArgumentReader(sizes!.payload)
     expect([reader.int(), reader.int()]).toEqual([430, 620])
+  })
+
+  it('resizes from the bottom right corner the way the client names it', () => {
+    const harness = createHarness(policyMap())
+    bootstrap(harness)
+    createWindow(harness, decorateWindowTitle('pet', 'AIRI'))
+    harness.client(buildMessage(SURFACE, 6, []))
+
+    harness.server(Buffer.concat([
+      buildMessage(POINTER, 0, [1, SURFACE, 10 * 256, 10 * 256]),
+      buildMessage(POINTER, 3, [2, 0, 0x110, 1]),
+    ]))
+    // 6 在协议里叫 bottom_right，但它的位是 bottom|left。客户端要的是右下角。
+    harness.client(buildMessage(TOPLEVEL, 6, [SEAT, 2, 6]))
+    harness.toServer.length = 0
+    harness.server(buildMessage(POINTER, 2, [0, 40 * 256, 30 * 256]))
+
+    const sizes = harness.toServer.find(message => message.opcode === LAYER.setSize)
+    const reader = new ArgumentReader(sizes!.payload)
+    expect([reader.int(), reader.int()]).toEqual([430, 620])
+
+    // 左边没被抓，所以位置不动。
+    const margins = harness.toServer.find(message => message.opcode === LAYER.setMargin)
+    const marginReader = new ArgumentReader(margins!.payload)
+    expect([marginReader.int(), marginReader.int(), marginReader.int(), marginReader.int()]).toEqual([100, 0, 0, 200])
   })
 
   it('shows a popup of a managed window as a layer surface', () => {

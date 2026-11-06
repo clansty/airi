@@ -13,6 +13,7 @@ import { focusWindow } from '../../libs/electron/focus'
 import { createServerChannelService } from '../../services/airi/channel-server'
 import { createI18nService } from '../../services/airi/i18n'
 import { createAppService, createAppVersionService, createPowerMonitorService, createScreenService, createSystemPreferencesService, createWindowService } from '../../services/electron'
+import { createLayerShellDisplayService } from '../../services/electron/layer-shell-display'
 import { WindowBackdropService } from '../../services/electron/window-backdrop'
 
 export function toggleWindowShow(window?: BrowserWindow | null): void {
@@ -198,6 +199,7 @@ export async function setupBaseWindowElectronInvokes(params: {
   setAlwaysOnTop?: (flag: boolean) => void
 }) {
   createScreenService({ context: params.context, window: params.window })
+  createLayerShellDisplayService({ context: params.context })
   createWindowService({ context: params.context, window: params.window, setAlwaysOnTop: params.setAlwaysOnTop })
   createAppService({ context: params.context, window: params.window })
   createAppVersionService({ window: params.window })

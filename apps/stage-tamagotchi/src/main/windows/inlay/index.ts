@@ -9,6 +9,7 @@ import { isMacOS } from 'std-env'
 
 import icon from '../../../../resources/icon.png?asset'
 
+import { resolveLayerShellDisplay } from '../../libs/electron/app-config'
 import { prepareLayerShellWindow } from '../../libs/electron/layer-shell-window'
 import { baseUrl, getPreloadPath, getRendererRoot, load, withHashRoute } from '../../libs/electron/location'
 import { createReusableWindow } from '../../libs/electron/window-manager/reusable'
@@ -34,7 +35,9 @@ export function setupInlayWindowReusable(params: {
   layerShell: LayerShellManager | undefined
 }) {
   return createReusableWindow(async () => {
-    const initialBounds = inlayWindowBounds(screen.getPrimaryDisplay().workArea)
+    // 层表面跑在设置里选的那块屏上，普通窗口还是回到主屏。
+    const targetDisplay = params.layerShell ? resolveLayerShellDisplay() : screen.getPrimaryDisplay()
+    const initialBounds = inlayWindowBounds(targetDisplay.workArea)
     // 层表面的几何要在窗口存在之前登记：代理按标题里的窗口 id 认领 role。
     const layerShell = await prepareLayerShellWindow({
       manager: params.layerShell,
@@ -42,6 +45,7 @@ export function setupInlayWindowReusable(params: {
       title: 'Inlay',
       options: { namespace: 'airi-inlay', layer: 'overlay', keyboard: 'none' },
       bounds: initialBounds,
+      display: params.layerShell ? targetDisplay : undefined,
     })
 
     const window = new BrowserWindow({

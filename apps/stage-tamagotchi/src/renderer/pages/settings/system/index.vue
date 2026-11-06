@@ -19,6 +19,12 @@ const settings = computed(() => [
     to: '/settings/system/color-scheme',
   },
   {
+    title: t('tamagotchi.settings.pages.system.display.title'),
+    description: t('tamagotchi.settings.pages.system.display.description'),
+    icon: 'i-solar:monitor-bold-duotone',
+    to: '/settings/system/display',
+  },
+  {
     title: t('tamagotchi.settings.pages.system.window-shortcuts.title'),
     description: t('tamagotchi.settings.pages.system.window-shortcuts.description'),
     icon: 'i-solar:keyboard-bold-duotone',

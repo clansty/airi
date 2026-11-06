@@ -79,6 +79,13 @@ const LAYER = { background: 0, bottom: 1, top: 2, overlay: 3 } as const
 const KEYBOARD = { 'none': 0, 'exclusive': 1, 'on-demand': 2 } as const
 const ANCHOR = { top: 1, bottom: 2, left: 4, right: 8 } as const
 const POINTER_BUTTON_RELEASED = 0
+/**
+ * `xdg_toplevel.resize` 的边。
+ *
+ * 协议里两个下角的枚举值和位对不上：`bottom_left` 是 10（= bottom|right 的位），`bottom_right` 是 6（= bottom|left 的位）。
+ * 客户端发的是名字对应的那个角，所以这里按名字换回真正的边。
+ */
+const RESIZE_EDGE = { none: 0, top: 1, bottom: 2, left: 4, right: 8, topLeft: 5, bottomLeft: 10, topRight: 9, bottomRight: 6 } as const
 
 /** 一次角色的判定过程。判定之前，属于它的请求先压着不发。 */
 interface PendingRole {
@@ -204,6 +211,15 @@ function placePopup(positioner: PositionerState | undefined): { x: number, y: nu
 
   // 结果要当 margin 用，只能是整数。
   return { x: Math.round(anchorX - gravityX + offset.x), y: Math.round(anchorY - gravityY + offset.y) }
+}
+
+/** 把 `xdg_toplevel.resize` 的枚举换成锚点位；两个下角要交换过来。 */
+function resizeEdgesFromProtocol(edges: number): number {
+  if (edges === RESIZE_EDGE.bottomLeft)
+    return ANCHOR.bottom | ANCHOR.left
+  if (edges === RESIZE_EDGE.bottomRight)
+    return ANCHOR.bottom | ANCHOR.right
+  return edges
 }
 
 /** 手势拖出来的窗口不能无限小，不然缓冲区和层表面都没法看。 */
@@ -591,7 +607,7 @@ export class ConnectionFilter {
           const reader = new ArgumentReader(message.payload)
           reader.object() // seat
           reader.uint() // serial
-          this.beginGesture(window, 'resize', reader.uint())
+          this.beginGesture(window, 'resize', resizeEdgesFromProtocol(reader.uint()))
           return []
         }
         case XDG_TOPLEVEL.destroy:
