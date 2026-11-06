@@ -37,7 +37,6 @@ pages:
       screen:
         title: Screen
         description: The screen the desktop character and its overlays show on.
-        follow-window: Follow the saved window position
         failed: Could not save the screen
         restart: Restart AIRI
         restart-hint: A window keeps its screen for life, so the new one shows after a restart.

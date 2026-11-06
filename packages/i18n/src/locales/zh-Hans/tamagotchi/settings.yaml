@@ -37,7 +37,6 @@ pages:
       screen:
         title: 显示屏幕
         description: 桌宠和它的浮层出现在哪块屏幕上。
-        follow-window: 跟着窗口自己保存的位置
         failed: 保存失败
         restart: 重新启动 AIRI
         restart-hint: 窗口创建时就绑定了屏幕，改了要重启才生效。

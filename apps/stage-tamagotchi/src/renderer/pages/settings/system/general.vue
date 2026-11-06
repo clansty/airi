@@ -4,7 +4,7 @@ import type { LayerShellDisplayState } from '../../../../shared/eventa'
 import SettingsGeneralFields from '@proj-airi/stage-pages/components/settings-general-fields.vue'
 
 import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
-import { Button, FieldCheckbox } from '@proj-airi/ui'
+import { Button, FieldCheckbox, Select } from '@proj-airi/ui'
 import { computed, onMounted, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
@@ -41,9 +41,13 @@ onMounted(async () => {
   }
 })
 
-const screenLabels = computed(() => layerShell.value?.displays ?? [])
+const screenOptions = computed(() => (layerShell.value?.displays ?? []).map(display => ({
+  label: display.label,
+  value: display.label,
+  description: `${display.width}×${display.height}`,
+})))
 
-async function updateScreen(label: string | undefined) {
+async function updateScreen(label: string) {
   try {
     layerShell.value = await setLayerShell({ label })
     // 层表面的输出在创建时就固定，所以换屏幕要重开才生效。
@@ -85,21 +89,11 @@ async function updateHidden(hidden: boolean) {
           {{ t('tamagotchi.settings.pages.system.general.screen.description') }}
         </div>
 
-        <Button
-          :class="['w-full justify-start', { 'ring-2 ring-primary-400': !layerShell.selected }]"
-          @click="updateScreen(undefined)"
-        >
-          {{ t('tamagotchi.settings.pages.system.general.screen.follow-window') }}
-        </Button>
-        <Button
-          v-for="display in screenLabels"
-          :key="display.label"
-          :class="['w-full justify-between', { 'ring-2 ring-primary-400': layerShell.selected === display.label }]"
-          @click="updateScreen(display.label)"
-        >
-          <span>{{ display.label }}</span>
-          <span :class="['text-xs opacity-60']">{{ display.width }}×{{ display.height }}</span>
-        </Button>
+        <Select
+          :model-value="layerShell.selected"
+          :options="screenOptions"
+          @update:model-value="updateScreen($event as string)"
+        />
 
         <div
           v-if="restartNeeded"
