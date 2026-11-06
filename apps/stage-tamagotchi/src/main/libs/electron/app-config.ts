@@ -54,13 +54,31 @@ export function updateAppConfig(patch: Partial<AppConfig>) {
 
 /** 现在能选的所有屏幕，屏幕上显示的就是它的名字。 */
 export function listDisplays() {
-  const primary = screen.getPrimaryDisplay()
   return screen.getAllDisplays().map(display => ({
     label: display.label,
     width: display.bounds.width,
     height: display.bounds.height,
-    primary: display.id === primary.id,
   }))
+}
+
+/**
+ * 没选屏幕、或者选的那块没了的时候用哪块。
+ *
+ * Wayland 上没有「主屏」这个概念（合成器不告诉客户端），Chromium 报的那个只是它自己挑的，
+ * 所以直接用主窗口保存的位置落在哪块屏上，没有保存过就用第一块。
+ */
+function fallbackDisplay(): Display {
+  const main = readAppConfig().windows?.find(window => window.tag === 'main')
+  if (main?.x !== undefined && main?.y !== undefined) {
+    return screen.getDisplayMatching({
+      x: main.x,
+      y: main.y,
+      width: main.width ?? 1,
+      height: main.height ?? 1,
+    })
+  }
+
+  return screen.getAllDisplays()[0] ?? screen.getPrimaryDisplay()
 }
 
 /**
@@ -79,7 +97,7 @@ export function resolveLayerShellDisplay(): Display {
     updateAppConfig({ layerShellDisplay: undefined })
   }
 
-  return screen.getPrimaryDisplay()
+  return fallbackDisplay()
 }
 
 export function setLayerShellDisplay(label: string | undefined): void {

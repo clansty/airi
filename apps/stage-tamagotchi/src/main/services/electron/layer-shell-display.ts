@@ -6,8 +6,9 @@ import type { LayerShellDisplayState } from '../../../shared/eventa'
 import { env } from 'node:process'
 
 import { defineInvokeHandler } from '@moeru/eventa'
+import { app } from 'electron'
 
-import { electronLayerShellDisplayGet, electronLayerShellDisplaySet, electronLayerShellInputRegion } from '../../../shared/eventa'
+import { electronAppRelaunch, electronLayerShellDisplayGet, electronLayerShellDisplaySet, electronLayerShellInputRegion } from '../../../shared/eventa'
 import { listDisplays, readAppConfig, setLayerShellDisplay } from '../../libs/electron/app-config'
 import { layerShellBindingFor } from '../../libs/electron/layer-shell-window'
 
@@ -37,6 +38,12 @@ export function createLayerShellDisplayService(params: {
   defineInvokeHandler(params.context, electronLayerShellDisplaySet, (payload) => {
     setLayerShellDisplay(payload?.label || undefined)
     return currentState()
+  })
+
+  // 层表面的输出在窗口创建时就固定，换屏幕只能在重开之后生效。
+  defineInvokeHandler(params.context, electronAppRelaunch, () => {
+    app.relaunch()
+    app.quit()
   })
 
   // 页面说哪些地方要接收鼠标，其余地方穿透。只有这个窗口自己是层表面时才有效。

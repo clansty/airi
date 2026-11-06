@@ -5,7 +5,6 @@ export interface LayerShellDisplayOption {
   label: string
   width: number
   height: number
-  primary: boolean
 }
 
 /**
@@ -28,6 +27,9 @@ export const electronLayerShellDisplayGet = defineInvokeEventa<LayerShellDisplay
  * 坐标是渲染进程的视图坐标；Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，所以走代理。
  */
 export const electronLayerShellInputRegion = defineInvokeEventa<void, { rects: { x: number, y: number, width: number, height: number }[] }>('eventa:invoke:electron:layer-shell:input-region')
+
+/** 重启应用。层表面的输出在窗口创建时就固定，换屏幕只能重开。 */
+export const electronAppRelaunch = defineInvokeEventa<void>('eventa:invoke:electron:app:relaunch')
 
 /** 换一块屏幕。窗口下次创建时生效：层表面的输出在创建时就固定了。 */
 export const electronLayerShellDisplaySet = defineInvokeEventa<LayerShellDisplayState, { label: string | undefined }>('eventa:invoke:electron:layer-shell:display:set')

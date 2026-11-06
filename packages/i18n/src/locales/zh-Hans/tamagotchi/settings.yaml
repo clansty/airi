@@ -34,6 +34,13 @@ pages:
       title: MCP 服务器
   system:
     general:
+      screen:
+        title: 显示屏幕
+        description: 桌宠和它的浮层出现在哪块屏幕上。
+        follow-window: 跟着窗口自己保存的位置
+        failed: 保存失败
+        restart: 重新启动 AIRI
+        restart-hint: 窗口创建时就绑定了屏幕，改了要重启才生效。
       hide-app-icon:
         title: 隐藏任务栏 / Dock 图标
         description: 仅保留托盘图标，通过托盘菜单打开窗口或退出应用。修改立即生效。
@@ -43,15 +50,6 @@ pages:
       section:
         window-shortcuts:
           title: 键盘快捷键
-    display:
-      title: 显示屏幕
-      description: 桌宠和它的浮层出现在哪块屏幕上。
-      follow-window: 跟着窗口自己保存的位置
-      primary: 主屏
-      saved: 已保存
-      failed: 保存失败
-      hint: 层表面的输出在创建时就固定了，所以改了之后下次开窗口才生效。
-      inactive: 这个会话里窗口是普通窗口，不需要选屏幕。
     window-shortcuts:
       description: 修改窗口快捷方式
       title: 窗口快捷方式
