@@ -23,7 +23,7 @@ import { ArgumentReader, buildMessage, parseMessages } from '../wire'
 const WL_DISPLAY = { sync: 0, getRegistry: 1, deleteId: 1 } as const
 const WL_REGISTRY = { bind: 0, global: 0 } as const
 const WL_COMPOSITOR = { createSurface: 0, createRegion: 1 } as const
-const WL_SURFACE = { destroy: 0, frame: 3, commit: 6 } as const
+const WL_SURFACE = { destroy: 0, attach: 1, frame: 3, commit: 6 } as const
 const WL_CALLBACK = { done: 0, destroy: 1 } as const
 const WL_POINTER = { enter: 0, leave: 1, motion: 2, button: 3 } as const
 const WL_SEAT = { getPointer: 0, getKeyboard: 1, getTouch: 2 } as const
@@ -277,6 +277,10 @@ export class ConnectionFilter {
   private layerShellGlobalInfo: { name: number, version: number } | undefined
   private layerShellGlobal: number | undefined
   private pendingRoles: PendingRole[] = []
+  /** 正在换输出的层表面：等合成器回收号之后再在新输出上重建。 */
+  private relocating?: { windowId: string, layerSurfaceId: number, outputId: number, outputSize: { width: number, height: number } | undefined, geometry: LayerShellGeometry }
+  /** 换输出后要压着 attach 的 surface，客户端 ack 了新层的初始 configure 才放开。 */
+  private holdingAttachFor?: number
   private clientRest: Buffer = empty
   private serverRest: Buffer = empty
   private closed = false
@@ -464,6 +468,12 @@ export class ConnectionFilter {
   private onSurfaceRequest(message: WaylandMessage): Buffer[] {
     const pending = this.pendingRoles.find(role => role.surfaceId === message.objectId)
 
+    // 新层的初始 configure 被 ack 之前，客户端还不能附缓冲区：合成器见到就会断开连接。
+    // 这里只丢 attach，commit 照发——空 commit 是合法的，而且客户端的 frame callback 还等着回音，
+    // 一起丢掉它就再也不画了。
+    if (this.holdingAttachFor === message.objectId && message.opcode === WL_SURFACE.attach)
+      return []
+
     // 角色在 commit 之前还没定，说明没有标题认领这个窗口，按普通窗口处置。
     if (pending && message.opcode === WL_SURFACE.commit)
       return [...this.flushPendingRoles('the surface committed before a title named it'), message.raw]
@@ -538,6 +548,9 @@ export class ConnectionFilter {
       if (message.opcode === XDG_SURFACE.ackConfigure) {
         // 合成器只认层表面的 ack。
         const serial = new ArgumentReader(message.payload).uint()
+        // 新层的第一条 configure 被 ack 了，客户端可以重新附缓冲区了。
+        if (this.holdingAttachFor === window.surfaceId)
+          this.holdingAttachFor = undefined
         return [buildMessage(window.layerSurfaceId, LAYER_SURFACE.ackConfigure, [serial])]
       }
 
@@ -994,6 +1007,11 @@ export class ConnectionFilter {
     }
     if (message.opcode === WL_DISPLAY.deleteId) {
       const id = new ArgumentReader(message.payload).uint()
+      if (this.relocating?.layerSurfaceId === id) {
+        this.finishRelocation(id)
+        return []
+      }
+
       const plug = this.plugs.get(id)
       if (plug) {
         plug.freed = true
@@ -1225,8 +1243,40 @@ export class ConnectionFilter {
   }
 
   private endGesture(window: LayerWindow): void {
+    const gesture = window.gesture
     window.gesture = undefined
     this.deps.onEvent({ type: 'geometry', windowId: window.windowId, geometry: window.geometry })
+
+    const pushed = gesture ? this.pushedEdges(window, gesture) : 0
+    if (pushed)
+      this.deps.onEvent({ type: 'pushed', windowId: window.windowId, edges: pushed })
+  }
+
+  /**
+   * 手势结束时指针已经跑到窗口外面，说明用户是把它顶到屏幕边上还继续推：
+   * 层表面换不了输出，只有应用能决定把它重建到隔壁那块屏上。
+   */
+  private pushedEdges(window: LayerWindow, gesture: Gesture): number {
+    const bounds = this.outputBounds(window)
+    if (!bounds || !this.pointer.known)
+      return 0
+
+    // 按下期间坐标基准没变，所以指针在输出里的位置是「按下时窗口的位置 + surface 内坐标」。
+    const pointerX = gesture.startGeometry.x + this.pointer.x
+    const pointerY = gesture.startGeometry.y + this.pointer.y
+    const { x, y, width, height } = window.geometry
+
+    let edges = 0
+    if (pointerX < x && x <= 0)
+      edges |= ANCHOR.left
+    if (pointerX >= x + width && x + width >= bounds.width)
+      edges |= ANCHOR.right
+    if (pointerY < y && y <= 0)
+      edges |= ANCHOR.top
+    if (pointerY >= y + height && y + height >= bounds.height)
+      edges |= ANCHOR.bottom
+
+    return edges
   }
 
   /** 位置限制在输出内。层表面换不了输出，拖到边上就停住。 */
@@ -1293,6 +1343,84 @@ export class ConnectionFilter {
   applyCommand(command: ProxyCommand): void {
     if (command.type === 'geometry')
       this.applyGeometry(command.windowId, command.geometry)
+    else if (command.type === 'relocate')
+      this.relocate(command.windowId, command.output, command.outputSize, command.geometry)
+  }
+
+  /**
+   * 把窗口挪到另一块屏幕上。
+   *
+   * 层表面的输出在创建时就固定，协议里没有换输出的请求，只能把 role 对象销毁再用同一个号重建。
+   * 号要等合成器发回 `delete_id` 才能再用：合成器的对象表只接受递增的新号，
+   * 提前用会被当成无效 id 直接断连接。
+   */
+  relocate(windowId: string, output: string | undefined, outputSize: { width: number, height: number } | undefined, geometry: LayerShellGeometry): boolean {
+    const window = this.windows.get(windowId)
+    if (!window)
+      return false
+
+    const outputId = output ? this.outputIdFor(output) : 0
+    if (output && outputId === undefined) {
+      this.deps.log(`cannot move ${windowId} to "${output}": no such output`)
+      return false
+    }
+
+    // 目标屏幕的边界先换上，钳制才对得上新屏幕。
+    const target: LayerWindow = { ...window, outputId: outputId ?? 0, outputSize: outputSize ?? undefined }
+    const clamped = this.clampToOutput(target, normalizeGeometry(geometry))
+
+    this.relocating = { windowId, layerSurfaceId: window.layerSurfaceId, outputId: outputId ?? 0, outputSize, geometry: clamped }
+    this.deps.sendToServer(buildMessage(window.layerSurfaceId, LAYER_SURFACE.destroy, []), [])
+    // 这个号现在是空的了，等合成器确认后重建，期间别再当成窗口的层表面处理。
+    this.layerSurfaces.delete(window.layerSurfaceId)
+    return true
+  }
+
+  /** 合成器回收了层表面的号，现在可以拿它在新输出上重建。 */
+  private finishRelocation(layerSurfaceId: number): void {
+    const relocating = this.relocating
+    this.relocating = undefined
+    if (!relocating || relocating.layerSurfaceId !== layerSurfaceId)
+      return
+
+    const window = this.windows.get(relocating.windowId)
+    const layerShellGlobal = this.layerShellGlobal
+    if (!window || layerShellGlobal === undefined) {
+      this.deps.log(`cannot resume moving ${relocating.windowId}: the window is gone`)
+      return
+    }
+
+    window.outputId = relocating.outputId
+    window.outputSize = relocating.outputSize ?? undefined
+    window.geometry = relocating.geometry
+    this.layerSurfaces.set(layerSurfaceId, window.windowId)
+    this.holdingAttachFor = window.surfaceId
+
+    const { x, y, width, height } = window.geometry
+    this.deps.sendToServer(Buffer.concat([
+      buildMessage(layerShellGlobal, LAYER_SHELL.getLayerSurface, [
+        layerSurfaceId,
+        window.surfaceId,
+        window.outputId,
+        LAYER[window.options.layer ?? 'overlay'],
+        window.options.namespace,
+      ]),
+      buildMessage(layerSurfaceId, LAYER_SURFACE.setAnchor, [ANCHOR.top | ANCHOR.left]),
+      buildMessage(layerSurfaceId, LAYER_SURFACE.setExclusiveZone, [-1 >>> 0]),
+      buildMessage(layerSurfaceId, LAYER_SURFACE.setMargin, [y, 0, 0, x]),
+      buildMessage(layerSurfaceId, LAYER_SURFACE.setSize, [width, height]),
+      buildMessage(layerSurfaceId, LAYER_SURFACE.setKeyboardInteractivity, [KEYBOARD[window.options.keyboard ?? 'none']]),
+      // 这里不能替客户端 commit：新层的第一个 configure 还没被 ack，客户端手里可能已经攒着一个带缓冲区的
+      // commit，代它提交会被合成器以「没 ack 初始 configure 就附缓冲区」断开整条连接。
+      // 客户端收到 configure 会自己重绘并提交，位置和尺寸在它那次 commit 上生效。
+    ]), [])
+
+    this.deps.onEvent({ type: 'geometry', windowId: window.windowId, geometry: window.geometry })
+    this.deps.log(`moved ${window.windowId} to ${this.outputNameFor(relocating.outputId)}: layer ${LAYER[window.options.layer ?? 'overlay']}, ${width}x${height} at ${x},${y}`)
+  }
+
+  private outputNameFor(outputId: number): string {
+    return [...this.outputIdsByName.entries()].find(([, id]) => id === outputId)?.[0] ?? 'the output the compositor picks'
   }
 
   hasWindow(windowId: string): boolean {

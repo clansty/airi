@@ -366,6 +366,26 @@ describe('connection filter', () => {
     expect([reader.int(), reader.int(), reader.int(), reader.int()]).toEqual([1000, 0, 0, 600])
   })
 
+  it('reports a window pushed past the edge of its output', () => {
+    const harness = createHarness(policyMap())
+    bootstrap(harness)
+    createWindow(harness, decorateWindowTitle('pet', 'AIRI'))
+    harness.client(buildMessage(SURFACE, 6, []))
+
+    harness.server(Buffer.concat([
+      buildMessage(POINTER, 0, [1, SURFACE, 10 * 256, 10 * 256]),
+      buildMessage(POINTER, 3, [2, 0, 0x110, 1]),
+    ]))
+    harness.client(buildMessage(TOPLEVEL, 5, [SEAT, 2]))
+    harness.events.length = 0
+
+    // 窗口被钳在右边（2160 + 400 = 2560），指针还继续往右走，走过了窗口的右边缘。
+    harness.server(buildMessage(POINTER, 2, [0, 2400 * 256, 10 * 256]))
+    harness.server(buildMessage(POINTER, 3, [3, 0, 0x110, 0]))
+
+    expect(harness.events).toContainEqual({ type: 'pushed', windowId: 'pet', edges: 8 })
+  })
+
   it('applies geometry from the app', () => {
     const harness = createHarness(policyMap())
     bootstrap(harness)

@@ -14,3 +14,4 @@ export { useElectronMouseInWindow } from './composables/use-electron-mouse-in-wi
 export { useElectronRelativeMouse } from './composables/use-electron-relative-mouse'
 export { useElectronWindowBounds } from './composables/use-electron-window-bounds'
 export { useElectronWindowResize } from './composables/use-electron-window-resize'
+export { usePointerNearWindowBorder } from './composables/use-pointer-near-window-border'

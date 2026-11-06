@@ -301,6 +301,16 @@ class Proxy {
         return
       }
 
+      case 'relocate': {
+        let applied = false
+        for (const relay of this.relays.values()) {
+          if (relay.filter.hasWindow(command.windowId))
+            applied = relay.filter.relocate(command.windowId, command.output, command.outputSize, command.geometry)
+        }
+        this.reply(command.id, applied)
+        return
+      }
+
       case 'status':
         this.reply(command.id, true, {
           layerShellAvailable: [...this.relays.values()].some(relay => relay.filter.layerShellAvailable),

@@ -1,8 +1,11 @@
 import type { LayerShellGeometry, LayerShellManager, LayerShellWindowOptions } from '@proj-airi/electron-wayland-layer-shell'
 import type { BrowserWindow, Display, Rectangle } from 'electron'
 
+import { useLogg } from '@guiiai/logg'
 import { decorateWindowTitle } from '@proj-airi/electron-wayland-layer-shell'
 import { screen } from 'electron'
+
+const log = useLogg('layer-shell-window').useGlobalConfig()
 
 /**
  * 一个窗口的层表面视角。
@@ -45,6 +48,50 @@ function toBounds(display: Display, geometry: LayerShellGeometry): Rectangle {
   }
 }
 
+/** 边的位值和代理那边一致。 */
+const EDGE = { top: 1, bottom: 2, left: 4, right: 8 } as const
+
+function spansOver(a: Display, b: Display, axis: 'x' | 'y'): boolean {
+  const start = axis === 'x' ? 'x' : 'y'
+  const size = axis === 'x' ? 'width' : 'height'
+  return a.bounds[start] < b.bounds[start] + b.bounds[size] && b.bounds[start] < a.bounds[start] + a.bounds[size]
+}
+
+/** 接在 `from` 这条边外头的那块屏。 */
+function displayAcrossEdge(from: Display, edges: number): Display | undefined {
+  const others = screen.getAllDisplays().filter(display => display.id !== from.id)
+  const right = from.bounds.x + from.bounds.width
+  const bottom = from.bounds.y + from.bounds.height
+
+  if (edges & EDGE.right)
+    return others.find(display => display.bounds.x === right && spansOver(display, from, 'y'))
+  if (edges & EDGE.left)
+    return others.find(display => display.bounds.x + display.bounds.width === from.bounds.x && spansOver(display, from, 'y'))
+  if (edges & EDGE.bottom)
+    return others.find(display => display.bounds.y === bottom && spansOver(display, from, 'x'))
+  if (edges & EDGE.top)
+    return others.find(display => display.bounds.y + display.bounds.height === from.bounds.y && spansOver(display, from, 'x'))
+
+  return undefined
+}
+
+/** 落到新屏幕上之后的位置：贴着两块屏共用的那条边，另一个方向不动。 */
+function wrapOntoEdge(edges: number, target: Display, bounds: Rectangle): Rectangle {
+  const next = { ...bounds }
+
+  if (edges & EDGE.right)
+    next.x = target.bounds.x
+  else if (edges & EDGE.left)
+    next.x = target.bounds.x + target.bounds.width - bounds.width
+
+  if (edges & EDGE.bottom)
+    next.y = target.bounds.y
+  else if (edges & EDGE.top)
+    next.y = target.bounds.y + target.bounds.height - bounds.height
+
+  return next
+}
+
 /** 没有层表面时的退化实现：一切交给 Electron。 */
 function createPlainBinding(title: string): LayerShellWindowBinding {
   let window: BrowserWindow | undefined
@@ -76,7 +123,7 @@ export async function prepareLayerShellWindow(params: {
   if (!manager)
     return createPlainBinding(params.title)
 
-  const display = screen.getDisplayMatching(params.bounds)
+  let display = screen.getDisplayMatching(params.bounds)
   const options: LayerShellWindowOptions = {
     ...params.options,
     output: params.options.output ?? display.label,
@@ -100,10 +147,52 @@ export async function prepareLayerShellWindow(params: {
       listener(bounds)
   }
 
+  /**
+   * 用户把窗口顶到屏幕边上还继续推。
+   *
+   * 层表面换不了输出，只能把 role 对象销毁到隔壁那块屏上重建；窗口和页面都不动，所以没有重开的闪烁。
+   * 几何先算好：落点贴着两块屏共用的那条边，另一个方向保持不动。
+   */
+  async function moveToAdjacentScreen(edges: number) {
+    if (!manager)
+      return
+
+    const from = screen.getDisplayMatching(toBounds(display, current))
+    const target = displayAcrossEdge(from, edges)
+    if (!target) {
+      log.log(`no screen beyond the edge on ${from.label}, staying`)
+      return
+    }
+
+    // 先把视角切到新屏幕：代理接下来报的几何是相对新屏幕的，位置要按它换算成全局坐标再存。
+    const bounds = wrapOntoEdge(edges, target, toBounds(display, current))
+    display = target
+    const moved = await manager.relocate(
+      params.windowId,
+      target.label,
+      { width: target.bounds.width, height: target.bounds.height },
+      toGeometry(target, bounds),
+    )
+    if (!moved) {
+      display = from
+      log.warn(`could not move ${params.windowId} to ${target.label}`)
+      return
+    }
+
+    current = toGeometry(target, bounds)
+    notify(bounds)
+    log.log(`moved ${params.windowId} to ${target.label}`)
+  }
+
   const stopListening = manager.onEvent((event) => {
     // 整个会话都不可用的事件没有窗口 id，交给调用方在日志里看。
     if (event.type === 'unavailable' || event.windowId !== params.windowId)
       return
+
+    if (event.type === 'pushed') {
+      void moveToAdjacentScreen(event.edges)
+      return
+    }
 
     if (event.type === 'refused') {
       // 这个 surface 的 role 已经定了，只能重建窗口才能再试一次。

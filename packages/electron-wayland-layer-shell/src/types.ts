@@ -46,6 +46,11 @@ export type LayerShellEvent
     | { type: 'detached', windowId: string }
     | { type: 'geometry', windowId: string, geometry: LayerShellGeometry }
     | { type: 'output', windowId: string, output: string }
+    /**
+     * 用户把窗口顶在屏幕边上了，指针还继续往外走：层表面换不了输出，要挪到隔壁那块屏只能把它重建过去。
+     * `edges` 的位值和 `ANCHOR` 一致，就是被顶住的那几条边。
+     */
+    | { type: 'pushed', windowId: string, edges: number }
     /** 合成器拒绝了层表面角色，这个窗口只能重建才能改用层表面。 */
     | { type: 'refused', windowId: string, reason: string }
     /** 合成器没有 `zwlr_layer_shell_v1`，所有窗口都退回普通窗口。 */

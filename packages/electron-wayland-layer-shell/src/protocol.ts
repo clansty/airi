@@ -4,6 +4,7 @@ import type { LayerShellEvent, LayerShellGeometry, LayerShellWindowOptions } fro
 export type ProxyCommand
   = | { type: 'attach', id: number, windowId: string, options: LayerShellWindowOptions, geometry: LayerShellGeometry }
     | { type: 'geometry', id: number, windowId: string, geometry: LayerShellGeometry }
+    | { type: 'relocate', id: number, windowId: string, output: string | undefined, outputSize: { width: number, height: number } | undefined, geometry: LayerShellGeometry }
     | { type: 'detach', id: number, windowId: string }
     | { type: 'status', id: number }
     | { type: 'shutdown' }

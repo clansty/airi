@@ -11,6 +11,7 @@ import {
   useElectronMouseInElement,
   useElectronMouseInWindow,
   useElectronRelativeMouse,
+  usePointerNearWindowBorder,
 } from '@proj-airi/electron-vueuse'
 import { useModelStore, useThreeSceneIsTransparentAtPoint } from '@proj-airi/stage-ui-three'
 import { HoloCoupon } from '@proj-airi/stage-ui/components'
@@ -185,8 +186,7 @@ const isTransparentForMouseEvents = computed(() => {
   return isTransparentByPixelsExact.value
 })
 
-const { isNearAnyBorder: isAroundWindowBorder } = useElectronMouseAroundWindowBorder({ threshold: 10 })
-const isAroundWindowBorderFor250Ms = refDebounced(isAroundWindowBorder, 250)
+const { isNearAnyBorder: isAroundWindowBorderFromScreen } = useElectronMouseAroundWindowBorder({ threshold: 10 })
 
 // The controls Island hides while the cursor is away from the window. The edge
 // band counts as the window, because a resize holds the cursor there. On
@@ -196,6 +196,12 @@ const isWayland = ref(true)
 useElectronEventaInvoke(electronAppIsWayland)()
   .then(value => isWayland.value = value)
   .catch(error => console.warn('[Main Page] Failed to detect Wayland; the controls Island stays shown:', errorMessageFrom(error)))
+
+// 同一条指针信号在 Wayland 上还会让窗口边框一直亮着闪：主进程给的坐标会卡住，层表面的位置又不受 Electron 管，
+// 算出来的相对坐标永远是「贴着边」。那里改用页面自己的 pointer 事件，那本来就只在指针压着窗口时才有。
+const { isNearAnyBorder: isAroundWindowBorderFromPointer } = usePointerNearWindowBorder({ threshold: 10 })
+const isAroundWindowBorder = computed(() => isWayland.value ? isAroundWindowBorderFromPointer.value : isAroundWindowBorderFromScreen.value)
+const isAroundWindowBorderFor250Ms = refDebounced(isAroundWindowBorder, 250)
 
 // The update launcher keeps a new bundle only when it reports healthy, and rolls it back otherwise. This page reports
 // when the stage stops loading, with the model or with the error surface. A page stuck on loading never reports.
