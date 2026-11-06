@@ -3,11 +3,11 @@ import type { VoicePresenceView } from '@proj-airi/stage-ui/components/scenarios
 
 import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { VoicePresence } from '@proj-airi/stage-ui/components/scenarios/chat'
-import { useTimeoutFn } from '@vueuse/core'
-import { nextTick, shallowRef, useTemplateRef, watch } from 'vue'
+import { useEventListener, useTimeoutFn } from '@vueuse/core'
+import { nextTick, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { electronInlayReturnHome } from '../../../shared/eventa'
+import { electronInlayReturnHome, electronLayerShellInputRegion } from '../../../shared/eventa'
 import { useChatFloatingClickThrough } from '../../composables/use-chat-floating-click-through'
 import { useGlobalEscape } from '../../composables/use-global-escape'
 
@@ -20,6 +20,7 @@ const RETURN_HOME_DELAY_MS = 5000
 const { t } = useI18n()
 const presence = useTemplateRef<InstanceType<typeof VoicePresence>>('presence')
 const returnHome = useElectronEventaInvoke(electronInlayReturnHome)
+const setInputRegion = useElectronEventaInvoke(electronLayerShellInputRegion)
 // The window stays above other apps, so only what the page paints takes the pointer.
 const { hitTest } = useChatFloatingClickThrough({ pinned: true })
 
@@ -30,6 +31,28 @@ const shown = shallowRef<VoicePresenceView>('hidden')
 // The hit test treats zero opacity as unpainted, and a transition starts or ends at zero opacity.
 // So `after-enter` runs it again once a card is visible, and `after-leave` once the card is gone.
 watch(shown, () => nextTick(() => hitTest()), { flush: 'post' })
+
+/**
+ * 层表面模式下，穿透由窗口的输入区域说了算：报道弹窗实际画出来的那块矩形，其余地方让给下面的应用。
+ *
+ * Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，`useChatFloatingClickThrough` 那套在那里是空操作。
+ */
+function reportInputRegion() {
+  const element = presence.value?.$el as HTMLElement | undefined
+  if (!element || shown.value === 'hidden') {
+    void setInputRegion({ rects: [] })
+    return
+  }
+
+  const rect = element.getBoundingClientRect()
+  void setInputRegion({
+    rects: [{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }],
+  })
+}
+
+onMounted(reportInputRegion)
+watch(shown, () => nextTick(reportInputRegion), { flush: 'post' })
+useEventListener(window, 'resize', () => nextTick(reportInputRegion))
 
 // Speech or a draft keeps the inlay where the user dragged it. Only an idle inlay returns home.
 const homeTimer = useTimeoutFn(() => void returnHome(), RETURN_HOME_DELAY_MS, { immediate: false })

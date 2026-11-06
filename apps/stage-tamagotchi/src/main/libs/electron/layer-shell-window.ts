@@ -13,6 +13,13 @@ const log = useLogg('layer-shell-window').useGlobalConfig()
  * 层表面没有窗管帮忙摆位置：位置是 margin、尺寸是 set_size，两者都由应用给。
  * 所以层表面模式下窗口几何必须经过这里，不能只调 `window.setBounds`（Wayland 上移动 toplevel 本来就不生效）。
  */
+/** 按窗口的 webContents id 找它的层表面绑定，IPC 那头只有一个 `BrowserWindow`。 */
+const bindings = new Map<number, LayerShellWindowBinding>()
+
+export function layerShellBindingFor(window: BrowserWindow): LayerShellWindowBinding | undefined {
+  return bindings.get(window.webContents.id)
+}
+
 export interface LayerShellWindowBinding {
   /** 建窗口时用的标题。没有层表面时就是原标题。 */
   title: string
@@ -26,6 +33,12 @@ export interface LayerShellWindowBinding {
   getBounds: () => Rectangle | undefined
   /** 用户拖动结束、或者窗口退化成普通窗口时回调，参数是全局坐标。 */
   onBoundsChanged: (listener: (bounds: Rectangle) => void) => () => void
+  /**
+   * 只有这些矩形接收指针，其余地方穿透到下面的应用。传 `null` 恢复整个窗口。
+   *
+   * Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，所以走代理的 `set_input_region`。
+   */
+  setInputRegion: (rects: { x: number, y: number, width: number, height: number }[] | null) => void
   dispose: () => void
 }
 
@@ -107,6 +120,7 @@ function createPlainBinding(title: string): LayerShellWindowBinding {
     },
     getBounds: () => (window && !window.isDestroyed() ? window.getBounds() : undefined),
     onBoundsChanged: () => () => {},
+    setInputRegion() {},
     dispose() {},
   }
 }
@@ -194,13 +208,15 @@ export async function prepareLayerShellWindow(params: {
     notify(toBounds(display, current))
   })
 
-  return {
+  const binding: LayerShellWindowBinding = {
     title: decorateWindowTitle(params.windowId, params.title),
     get active() {
       return layer
     },
     bindWindow(value) {
       window = value
+      bindings.set(value.webContents.id, binding)
+      value.once('closed', () => bindings.delete(value.webContents.id))
     },
     setBounds(bounds) {
       const geometry = toGeometry(display, bounds)
@@ -219,10 +235,17 @@ export async function prepareLayerShellWindow(params: {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    setInputRegion(rects) {
+      if (!layer)
+        return
+      void manager.setInputRegion(params.windowId, rects)
+    },
     dispose() {
       stopListening()
       listeners.clear()
       void manager.detach(params.windowId)
     },
   }
+
+  return binding
 }

@@ -1,4 +1,5 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
+import type { BrowserWindow } from 'electron'
 
 import type { LayerShellDisplayState } from '../../../shared/eventa'
 
@@ -6,8 +7,9 @@ import { env } from 'node:process'
 
 import { defineInvokeHandler } from '@moeru/eventa'
 
-import { electronLayerShellDisplayGet, electronLayerShellDisplaySet } from '../../../shared/eventa'
+import { electronLayerShellDisplayGet, electronLayerShellDisplaySet, electronLayerShellInputRegion } from '../../../shared/eventa'
 import { listDisplays, readAppConfig, setLayerShellDisplay } from '../../libs/electron/app-config'
+import { layerShellBindingFor } from '../../libs/electron/layer-shell-window'
 
 /** 这个会话的窗口会不会变成层表面：启动器只在 Linux + Wayland + 合成器跟手时才拉起代理。 */
 function layerShellActive(): boolean {
@@ -27,10 +29,18 @@ function currentState(): LayerShellDisplayState {
  *
  * 层表面窗口的输出在创建时就固定，所以改了之后下次开窗口才生效；这里只负责存下来。
  */
-export function createLayerShellDisplayService(params: { context: ReturnType<typeof createContext>['context'] }) {
+export function createLayerShellDisplayService(params: {
+  context: ReturnType<typeof createContext>['context']
+  window: BrowserWindow
+}) {
   defineInvokeHandler(params.context, electronLayerShellDisplayGet, () => currentState())
   defineInvokeHandler(params.context, electronLayerShellDisplaySet, (payload) => {
     setLayerShellDisplay(payload?.label || undefined)
     return currentState()
+  })
+
+  // 页面说哪些地方要接收鼠标，其余地方穿透。只有这个窗口自己是层表面时才有效。
+  defineInvokeHandler(params.context, electronLayerShellInputRegion, (payload) => {
+    layerShellBindingFor(params.window)?.setInputRegion(payload?.rects ?? null)
   })
 }

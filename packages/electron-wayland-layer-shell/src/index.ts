@@ -200,6 +200,20 @@ export class LayerShellManager {
     }
   }
 
+  /**
+   * 设置窗口的输入区域：只有这些矩形接收指针，其它地方穿透到下面的窗口。传 `null` 恢复整个窗口。
+   *
+   * Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，穿透只能走这一条。
+   */
+  async setInputRegion(windowId: string, rects: { x: number, y: number, width: number, height: number }[] | null): Promise<boolean> {
+    try {
+      return await this.control.request<boolean>({ type: 'input-region', windowId, rects })
+    }
+    catch {
+      return false
+    }
+  }
+
   async detach(windowId: string): Promise<void> {
     try {
       await this.control.request({ type: 'detach', windowId })

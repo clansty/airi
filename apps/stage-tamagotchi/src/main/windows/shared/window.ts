@@ -199,7 +199,7 @@ export async function setupBaseWindowElectronInvokes(params: {
   setAlwaysOnTop?: (flag: boolean) => void
 }) {
   createScreenService({ context: params.context, window: params.window })
-  createLayerShellDisplayService({ context: params.context })
+  createLayerShellDisplayService({ context: params.context, window: params.window })
   createWindowService({ context: params.context, window: params.window, setAlwaysOnTop: params.setAlwaysOnTop })
   createAppService({ context: params.context, window: params.window })
   createAppVersionService({ window: params.window })

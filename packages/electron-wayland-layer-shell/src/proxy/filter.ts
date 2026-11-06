@@ -23,7 +23,8 @@ import { ArgumentReader, buildMessage, parseMessages } from '../wire'
 const WL_DISPLAY = { sync: 0, getRegistry: 1, deleteId: 1 } as const
 const WL_REGISTRY = { bind: 0, global: 0 } as const
 const WL_COMPOSITOR = { createSurface: 0, createRegion: 1 } as const
-const WL_SURFACE = { destroy: 0, attach: 1, frame: 3, commit: 6 } as const
+const WL_REGION = { destroy: 0, add: 1, subtract: 2 } as const
+const WL_SURFACE = { destroy: 0, attach: 1, frame: 3, setInputRegion: 5, commit: 6 } as const
 const WL_CALLBACK = { done: 0, destroy: 1 } as const
 const WL_POINTER = { enter: 0, leave: 1, motion: 2, button: 3 } as const
 const WL_SEAT = { getPointer: 0, getKeyboard: 1, getTouch: 2 } as const
@@ -135,6 +136,14 @@ interface Gesture {
   edges: number
   startPointer: { x: number, y: number }
   startGeometry: LayerShellGeometry
+}
+
+/** 一块接收指针的矩形，坐标相对窗口。 */
+export interface InputRegionRect {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 /** 最近一次按下：手势的位移基准就是它。 */
@@ -279,6 +288,12 @@ export class ConnectionFilter {
   private readonly outputs = new Map<number, OutputState>()
   private readonly outputIdsByName = new Map<string, number>()
   private readonly positioners = new Map<number, PositionerState>()
+  /** 每个窗口要接收指针的矩形；`null` 表示整个窗口都接收。 */
+  private readonly inputRegions = new Map<string, InputRegionRect[] | null>()
+  private compositorId?: number
+  /** 代理自己的 wl_region 对象号，借的是一个被回收的客户端号。 */
+  private inputRegionId?: number
+  private wantsRegion = false
   private readonly popups = new Map<number, LayerPopup>()
   /** 弹窗的 xdg_surface 在客户端眼里是普通对象，要靠它认出来。 */
   private readonly popupByXdgSurface = new Map<number, number>()
@@ -447,6 +462,8 @@ export class ConnectionFilter {
     const id = reader.object()
 
     this.objects.set(id, { iface })
+    if (iface === 'wl_compositor')
+      this.compositorId = id
     return [message.raw]
   }
 
@@ -1019,6 +1036,17 @@ export class ConnectionFilter {
         this.deps.log('the layer shell global went away with its surface, it will be bound again')
       }
 
+      // 借一个被回收的号放我们自己的 wl_region：客户端不能再拿到这个号，否则会撞。
+      if (this.wantsRegion && this.inputRegionId === undefined && this.compositorId !== undefined
+        && !this.plugs.has(id) && id !== this.layerShellGlobal) {
+        this.wantsRegion = false
+        this.inputRegionId = id
+        this.deps.sendToServer(buildMessage(this.compositorId, WL_COMPOSITOR.createRegion, [id]), [])
+        for (const window of this.windows.values())
+          this.flushInputRegion(window)
+        return []
+      }
+
       const plug = this.plugs.get(id)
       if (plug) {
         plug.freed = true
@@ -1348,9 +1376,63 @@ export class ConnectionFilter {
     return true
   }
 
+  /**
+   * 设置窗口的输入区域：只有这些矩形接收指针，其它地方穿透到下面的窗口。
+   *
+   * Electron 的 `setIgnoreMouseEvents` 在 Wayland 上没有实现，穿透只能在协议这一层做：
+   * 拿一个代理自己的 `wl_region`，把矩形填进去，再交给 `wl_surface.set_input_region`。
+   */
+  applyInputRegion(windowId: string, rects: InputRegionRect[] | null): boolean {
+    const window = this.windows.get(windowId)
+    if (!window)
+      return false
+
+    this.inputRegions.set(windowId, rects)
+    this.flushInputRegion(window)
+    return true
+  }
+
+  private flushInputRegion(window: LayerWindow): void {
+    if (this.inputRegionId === undefined) {
+      if (this.compositorId === undefined)
+        return
+
+      // 区域对象号只能从合成器回收的号里借：自己造号会和客户端撞。
+      this.wantsRegion = true
+      return
+    }
+
+    const regionId = this.inputRegionId
+    const rects = this.inputRegions.get(window.windowId)
+    const out: Buffer[] = []
+
+    if (rects === null || rects === undefined) {
+      // 没有区域就是整个 surface 都接收指针。
+      out.push(buildMessage(window.surfaceId, WL_SURFACE.setInputRegion, [0]))
+    }
+    else {
+      // 清空旧矩形：减掉一块盖住所有屏幕的矩形，比销毁重建省一个对象号。
+      out.push(buildMessage(regionId, WL_REGION.subtract, [-1 << 20, -1 << 20, 1 << 24, 1 << 24]))
+      for (const rect of rects) {
+        out.push(buildMessage(regionId, WL_REGION.add, [
+          Math.round(rect.x),
+          Math.round(rect.y),
+          Math.max(0, Math.round(rect.width)),
+          Math.max(0, Math.round(rect.height)),
+        ]))
+      }
+      out.push(buildMessage(window.surfaceId, WL_SURFACE.setInputRegion, [regionId]))
+    }
+
+    out.push(buildMessage(window.surfaceId, WL_SURFACE.commit, []))
+    this.deps.sendToServer(Buffer.concat(out), [])
+  }
+
   applyCommand(command: ProxyCommand): void {
     if (command.type === 'geometry')
       this.applyGeometry(command.windowId, command.geometry)
+    else if (command.type === 'input-region')
+      this.applyInputRegion(command.windowId, command.rects)
   }
 
   hasWindow(windowId: string): boolean {

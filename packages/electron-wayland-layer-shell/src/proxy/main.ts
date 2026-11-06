@@ -301,6 +301,16 @@ class Proxy {
         return
       }
 
+      case 'input-region': {
+        let applied = false
+        for (const relay of this.relays.values()) {
+          if (relay.filter.hasWindow(command.windowId))
+            applied = relay.filter.applyInputRegion(command.windowId, command.rects)
+        }
+        this.reply(command.id, applied)
+        return
+      }
+
       case 'status':
         this.reply(command.id, true, {
           layerShellAvailable: [...this.relays.values()].some(relay => relay.filter.layerShellAvailable),
