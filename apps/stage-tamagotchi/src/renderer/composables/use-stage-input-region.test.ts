@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { inputRegionRectsOf, paintedBoundsOf } from './use-stage-input-region'
+import { inputRegionRectsOf, paintedBoundsOf, resizeBandRectsOf } from './use-stage-input-region'
 
 /** 一个 rows × columns 的采样网格，`painted` 里的格子按 alpha 255 填充。 */
 function grid(columns: number, rows: number, painted: [column: number, row: number][] = []) {
@@ -70,5 +70,21 @@ describe('inputRegionRectsOf', () => {
     })
 
     expect(rects).toEqual([{ x: 0, y: 0, width: 10, height: 10 }])
+  })
+})
+
+describe('resizeBandRectsOf', () => {
+  it('keeps a band on every side, without overlapping the corners', () => {
+    expect(resizeBandRectsOf(500, 800, 10)).toEqual([
+      { x: 0, y: 0, width: 500, height: 10 },
+      { x: 0, y: 790, width: 500, height: 10 },
+      { x: 0, y: 10, width: 10, height: 780 },
+      { x: 490, y: 10, width: 10, height: 780 },
+    ])
+  })
+
+  // 太小的窗口没有能缩放的边，整窗给出去才拖得动。
+  it('gives the whole window when it is smaller than two bands', () => {
+    expect(resizeBandRectsOf(15, 15, 10)).toEqual([{ x: 0, y: 0, width: 15, height: 15 }])
   })
 })

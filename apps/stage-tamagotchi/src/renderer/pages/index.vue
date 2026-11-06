@@ -710,7 +710,8 @@ const cursorPosition = computed(() => ({
     relative z-2 h-full overflow-hidden rounded-xl
     transition="opacity duration-500 ease-in-out"
   >
-    <div v-show="!settingsStore.streamerMode && !fullscreenActive" ref="authStatusElement" :class="['absolute left-1/2 top-3 z-40 w-fit -translate-x-1/2']">
+    <!-- 登录状态那条也有按钮，所以要带上标记，否则层表面上它不在输入区域里。 -->
+    <div v-show="!settingsStore.streamerMode && !fullscreenActive" ref="authStatusElement" :[stageOpaqueAttribute]="true" :class="['absolute left-1/2 top-3 z-40 w-fit -translate-x-1/2']">
       <AuthStatusIsland />
     </div>
     <!-- Stage is always in DOM so TresCanvas can measure dimensions -->

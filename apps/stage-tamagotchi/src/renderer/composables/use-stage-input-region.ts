@@ -14,6 +14,13 @@ const sampleDivisor = 12
 /** alpha 高于这个值才算画了东西，把角色边缘的淡出排除在外。 */
 const paintedAlphaFloor = 8
 const defaultIntervalMs = 400
+/**
+ * 窗口四边留给缩放的一圈宽度。
+ *
+ * Chromium 的边缘命中测试要用指针事件的坐标，一圈都不给的话窗口就再也缩放不了，
+ * 靠边显示的那圈缩放边框也不会亮。10 和 `usePointerNearWindowBorder` 的阈值一致。
+ */
+const resizeBandPx = 10
 
 export interface InputRegionRect {
   x: number
@@ -104,6 +111,50 @@ export function inputRegionRectsOf(params: {
 }
 
 /**
+ * 窗口四边那一圈，用于缩放。
+ *
+ * 窗口比两圈还窄时整窗都给，否则这个窗口没有能缩放的边。
+ */
+export function resizeBandRectsOf(width: number, height: number, band = resizeBandPx): InputRegionRect[] {
+  if (width <= band * 2 || height <= band * 2)
+    return [{ x: 0, y: 0, width, height }]
+
+  return [
+    { x: 0, y: 0, width, height: band },
+    { x: 0, y: height - band, width, height: band },
+    { x: 0, y: band, width: band, height: height - band * 2 },
+    { x: width - band, y: band, width: band, height: height - band * 2 },
+  ]
+}
+
+/**
+ * 页面上另外画了东西、自己要接收指针的元素：控制岛、弹层、对话框。
+ *
+ * 这些是 DOM，自带矩形，不用读画布。
+ */
+export function paintedOverlayRects(): InputRegionRect[] {
+  const rects: InputRegionRect[] = []
+
+  for (const element of document.querySelectorAll(paintedOverlaySelector)) {
+    if (!(element instanceof HTMLElement))
+      continue
+
+    // 不能用 offsetParent 判断可见性：`position: fixed` 的元素 offsetParent 永远是 null，而控制岛就是 fixed。
+    // `v-show` 收起的东西是 display: none，没有 client rect。
+    if (element.getClientRects().length === 0)
+      continue
+
+    const bounds = element.getBoundingClientRect()
+    if (bounds.width === 0 || bounds.height === 0)
+      continue
+
+    rects.push({ x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height })
+  }
+
+  return rects
+}
+
+/**
  * 每帧都算，只有变了才上报。
  *
  * 读画布是这整件事里唯一有成本的一步，所以采样比事件慢得多：角色的轮廓本来就变得很慢。
@@ -127,25 +178,6 @@ export function useStageInputRegion(options: {
 
     sent = rects
     options.apply(rects)
-  }
-
-  /** 页面上另外画了东西的元素，它们自带矩形，不用读画布。 */
-  function overlayRects(): InputRegionRect[] {
-    const rects: InputRegionRect[] = []
-
-    for (const element of document.querySelectorAll(paintedOverlaySelector)) {
-      // `v-show` 收起的东西没有 offsetParent，它不画也不该吃点击。
-      if (!(element instanceof HTMLElement) || element.offsetParent === null)
-        continue
-
-      const bounds = element.getBoundingClientRect()
-      if (bounds.width === 0 || bounds.height === 0)
-        continue
-
-      rects.push({ x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height })
-    }
-
-    return rects
   }
 
   function sample() {
@@ -198,7 +230,13 @@ export function useStageInputRegion(options: {
       return
     }
 
-    publish(inputRegionRectsOf({ bounds, source, columns, rows, overlays: overlayRects() }))
+    publish(inputRegionRectsOf({
+      bounds,
+      source,
+      columns,
+      rows,
+      overlays: [...resizeBandRectsOf(window.innerWidth, window.innerHeight), ...paintedOverlayRects()],
+    }))
   }
 
   // 画布要在这个帧被合成之前读，否则读到的是上一帧或者空的。
