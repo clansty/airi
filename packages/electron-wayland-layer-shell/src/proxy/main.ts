@@ -168,8 +168,17 @@ class Proxy {
         pollFds.push({ fd: relay.serverFd, events: POLLIN | (relay.toServer.length > 0 ? POLLOUT : 0) })
       }
 
-      for (const ready of poll(pollFds, 200))
-        this.handleReady(ready.fd, ready.revents)
+      for (const ready of poll(pollFds, 200)) {
+        // 一个 socket 上出的错不该带走整条连接：代理崩了，Chromium 的 Wayland 连接就跟着断，
+        // 应用那头看到的是「莫名其妙退出」，而真正的原因在这里。
+        try {
+          this.handleReady(ready.fd, ready.revents)
+        }
+        catch (error) {
+          log(`a ready socket failed, dropping it: ${String(error)}`)
+          this.dropFd(ready.fd)
+        }
+      }
     }
 
     this.shutdown()
@@ -213,6 +222,23 @@ class Proxy {
     for (const [clientFd, relay] of this.relays) {
       if (relay.closed)
         this.relays.delete(clientFd)
+    }
+  }
+
+  /** 一个 fd 出错之后连它一起丢掉，否则下一次 poll 还会读到同一个坏 socket。 */
+  private dropFd(fd: number): void {
+    for (const [clientFd, relay] of this.relays) {
+      if (relay.clientFd !== fd && relay.serverFd !== fd)
+        continue
+
+      relay.close()
+      this.relays.delete(clientFd)
+      return
+    }
+
+    if (this.controlClients.has(fd)) {
+      this.controlClients.delete(fd)
+      closeFd(fd)
     }
   }
 
@@ -263,14 +289,14 @@ class Proxy {
         if (joined[index] !== 0x0A)
           continue
         client.used = true
-        this.handleCommand(fd, joined.toString('utf8', start, index))
+        this.handleCommand(joined.toString('utf8', start, index))
         start = index + 1
       }
       client.buffer = joined.subarray(start)
     }
   }
 
-  private handleCommand(fd: number, line: string): void {
+  private handleCommand(line: string): void {
     let command: ProxyCommand
     try {
       command = JSON.parse(line) as ProxyCommand
@@ -280,6 +306,20 @@ class Proxy {
       return
     }
 
+    // 一条命令出错只该丢这一条：这个进程是 Chromium 唯一的 Wayland 连接，它崩了应用会跟着掉线，
+    // 而且在应用那头看起来就是「不知道发生了什么就退出了」。
+    try {
+      this.dispatchCommand(command)
+    }
+    catch (error) {
+      const reason = String(error)
+      log(`a control command failed: ${command.type}: ${reason}`)
+      if ('id' in command)
+        this.reply(command.id, false, undefined, reason)
+    }
+  }
+
+  private dispatchCommand(command: ProxyCommand): void {
     switch (command.type) {
       case 'attach':
         this.policies.set(command.windowId, { options: command.options, geometry: command.geometry })
@@ -323,7 +363,7 @@ class Proxy {
         return
 
       default:
-        this.reply(fd, false, undefined, 'unknown command')
+        log('a control client sent a command this proxy does not know')
     }
   }
 
